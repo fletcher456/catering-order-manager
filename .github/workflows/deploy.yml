@@ -36,6 +36,7 @@ jobs:
       run: |
         npx tsc --noEmit
         npx vite build --base ./
+        cp public/pdf.worker.min.js dist/
       
     - name: Setup Pages
       uses: actions/configure-pages@v4

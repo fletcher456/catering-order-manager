@@ -116,6 +116,15 @@ A React-based catering order management system that parses restaurant menu PDFs 
   - Detailed error reporting with specific failure points
 - **Status**: ✓ Implemented - logs now show exactly where parsing fails
 
+### PDF.js Worker Loading Issue
+- **Issue**: PDF parsing stuck at "Loading PDF document..." due to CDN worker loading failures
+- **Root Cause**: PDF.js worker failing to load from external CDN sources on GitHub Pages
+- **Solution**: Configured local PDF.js worker bundle:
+  - Copied `pdf.worker.min.js` to public directory for local serving
+  - Updated worker configuration to use relative path `./pdf.worker.min.js`
+  - Modified GitHub Actions to include worker file in deployment
+- **Status**: ✓ Resolved - PDF parsing now uses local worker without CDN dependencies
+
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.

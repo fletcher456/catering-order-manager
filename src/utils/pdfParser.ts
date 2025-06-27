@@ -1,9 +1,10 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import { MenuItem } from '../types';
 
-// Configure PDF.js worker
+// Configure PDF.js worker to use local bundle
 if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+  // Use the locally served worker file
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
 }
 
 interface TextItem {
@@ -37,7 +38,11 @@ export class MenuPDFParser {
       this.log(`Array buffer created: ${arrayBuffer.byteLength} bytes`);
       
       this.log('Loading PDF document...');
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await pdfjsLib.getDocument({ 
+        data: arrayBuffer,
+        useWorkerFetch: false,
+        isEvalSupported: false
+      }).promise;
       this.log(`PDF loaded successfully. Pages: ${pdf.numPages}`);
       
       let allText = '';
