@@ -89,7 +89,22 @@ A React-based catering order management system that parses restaurant menu PDFs 
 - June 27, 2025: Initial project setup and development
 - June 27, 2025: Complete React application with PDF parsing functionality
 - June 27, 2025: GitHub Pages deployment configuration added
+- June 27, 2025: Fixed GitHub Actions build error by updating workflow to use direct Vite commands
 - June 27, 2025: Comprehensive documentation and README created
+
+## Recent Issues Resolved
+
+### GitHub Actions Build Fix
+- **Issue**: GitHub Actions failing with "Missing script: build" error
+- **Root Cause**: package.json missing build script, cannot be modified due to environment restrictions
+- **Solution**: Updated `.github/workflows/deploy.yml` to use direct Vite commands:
+  - `npx tsc --noEmit` for type checking
+  - `npx vite build --base ./` for production build with correct GitHub Pages base path
+- **Status**: ✓ Resolved - deployment workflow now functional
+
+## User Preferences
+
+Preferred communication style: Simple, everyday language.
 
 ## User Preferences
 

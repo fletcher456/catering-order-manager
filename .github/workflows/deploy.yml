@@ -33,7 +33,9 @@ jobs:
       run: npm ci
       
     - name: Build application
-      run: npm run build
+      run: |
+        npx tsc --noEmit
+        npx vite build --base ./
       
     - name: Setup Pages
       uses: actions/configure-pages@v4

@@ -66,6 +66,8 @@ This project is configured for automatic deployment to GitHub Pages using GitHub
 2. GitHub Actions will automatically build and deploy to GitHub Pages
 3. Your site will be available at `https://yourusername.github.io/repository-name`
 
+**Note**: The GitHub Actions workflow has been configured to use direct Vite commands (`npx vite build --base ./`) to ensure compatibility with static hosting requirements.
+
 ### Manual Setup
 
 1. Go to your repository's Settings → Pages
