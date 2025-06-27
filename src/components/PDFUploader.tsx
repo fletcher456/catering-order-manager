@@ -11,6 +11,11 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const addLog = (message: string) => {
+    setLogs(prev => [...prev, `${new Date().toLocaleTimeString()}: ${message}`]);
+  };
 
   const handleFileUpload = async (file: File) => {
     if (file.type !== 'application/pdf') {
@@ -20,19 +25,26 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
 
     setIsProcessing(true);
     setError(null);
+    setLogs([]);
+    addLog('Starting PDF upload process...');
 
     try {
       const parser = new MenuPDFParser();
+      parser.setLogCallback(addLog);
       const menuItems = await parser.extractMenuFromPDF(file);
       
       if (menuItems.length === 0) {
+        addLog('No menu items found in PDF');
         setError('No menu items found in the PDF. Please ensure the PDF contains a restaurant menu with prices.');
         return;
       }
 
+      addLog(`Successfully extracted ${menuItems.length} menu items!`);
       onMenuExtracted(menuItems);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process PDF');
+      const errorMsg = err instanceof Error ? err.message : 'Failed to process PDF';
+      addLog(`ERROR: ${errorMsg}`);
+      setError(errorMsg);
     } finally {
       setIsProcessing(false);
     }
@@ -116,6 +128,25 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
         </label>
       </div>
 
+      {/* Real-time Processing Logs */}
+      {logs.length > 0 && (
+        <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
+          <h4 className="text-sm font-medium text-gray-700 mb-2">Processing Log:</h4>
+          <div className="max-h-40 overflow-y-auto text-xs font-mono">
+            {logs.map((log, index) => (
+              <div key={index} className="text-gray-600 mb-1">
+                {log}
+              </div>
+            ))}
+          </div>
+          {isProcessing && (
+            <div className="mt-2 text-xs text-blue-600">
+              Processing... Check logs above for current status
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md">
           <div className="flex items-center space-x-2">
@@ -127,6 +158,7 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
 
       <div className="mt-4 text-xs text-gray-500 text-center">
         <p>Best results with PDFs exported from restaurant websites or digital menus</p>
+        <p className="mt-1">Processing logs will appear above to help debug any issues</p>
       </div>
     </div>
   );

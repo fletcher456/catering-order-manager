@@ -102,6 +102,20 @@ A React-based catering order management system that parses restaurant menu PDFs 
   - `npx vite build --base ./` for production build with correct GitHub Pages base path
 - **Status**: ✓ Resolved - deployment workflow now functional
 
+### CSS Styling Issues on GitHub Pages
+- **Issue**: Tailwind CSS not loading properly on static hosting
+- **Root Cause**: PostCSS processing conflicts with static deployment
+- **Solution**: Created standalone CSS file (`src/app.css`) with complete utility classes
+- **Status**: ✓ Resolved - styling now works reliably on GitHub Pages
+
+### PDF Parsing Debugging Enhancement
+- **Issue**: PDF parsing getting stuck without clear error information
+- **Solution**: Added comprehensive real-time logging system:
+  - Step-by-step progress tracking in PDF parser
+  - Live log display in upload component UI
+  - Detailed error reporting with specific failure points
+- **Status**: ✓ Implemented - logs now show exactly where parsing fails
+
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.

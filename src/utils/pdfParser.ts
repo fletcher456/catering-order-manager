@@ -15,18 +15,43 @@ interface TextItem {
 }
 
 export class MenuPDFParser {
+  private logCallback?: (message: string) => void;
+
+  setLogCallback(callback: (message: string) => void) {
+    this.logCallback = callback;
+  }
+
+  private log(message: string) {
+    console.log(`[PDF Parser] ${message}`);
+    if (this.logCallback) {
+      this.logCallback(`[PDF Parser] ${message}`);
+    }
+  }
+
   async extractMenuFromPDF(file: File): Promise<MenuItem[]> {
     try {
+      this.log(`Starting PDF parsing for file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+      
+      this.log('Converting file to array buffer...');
       const arrayBuffer = await file.arrayBuffer();
+      this.log(`Array buffer created: ${arrayBuffer.byteLength} bytes`);
+      
+      this.log('Loading PDF document...');
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      this.log(`PDF loaded successfully. Pages: ${pdf.numPages}`);
       
       let allText = '';
       let textItems: TextItem[] = [];
       
       // Extract text from all pages
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        this.log(`Processing page ${pageNum}/${pdf.numPages}...`);
+        
         const page = await pdf.getPage(pageNum);
+        this.log(`Page ${pageNum} loaded, extracting text content...`);
+        
         const textContent = await page.getTextContent();
+        this.log(`Page ${pageNum}: Found ${textContent.items.length} text items`);
         
         // Preserve spatial information for better parsing
         const pageItems = textContent.items.map((item: any) => ({
@@ -38,23 +63,41 @@ export class MenuPDFParser {
         }));
         
         textItems.push(...pageItems);
-        allText += textContent.items.map((item: any) => item.str).join(' ') + '\n';
+        const pageText = textContent.items.map((item: any) => item.str).join(' ');
+        allText += pageText + '\n';
+        
+        this.log(`Page ${pageNum}: Extracted ${pageText.length} characters`);
       }
       
-      return this.parseMenuItems(allText, textItems);
+      this.log(`Text extraction complete. Total characters: ${allText.length}`);
+      this.log(`Total text items collected: ${textItems.length}`);
+      
+      this.log('Starting menu item parsing...');
+      const menuItems = this.parseMenuItems(allText, textItems);
+      this.log(`Menu parsing complete. Found ${menuItems.length} items`);
+      
+      return menuItems;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.log(`ERROR: ${errorMessage}`);
       console.error('Error parsing PDF:', error);
-      throw new Error('Failed to parse PDF. Please ensure it\'s a valid PDF file.');
+      throw new Error(`Failed to parse PDF: ${errorMessage}`);
     }
   }
   
   private parseMenuItems(text: string, _textItems: TextItem[]): MenuItem[] {
+    this.log('Starting menu item pattern matching...');
     const menuItems: MenuItem[] = [];
     const lines = text.split('\n').filter(line => line.trim());
+    this.log(`Split text into ${lines.length} lines for processing`);
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
+      
+      if (i % 50 === 0) {
+        this.log(`Processing line ${i}/${lines.length}: "${line.substring(0, 50)}..."`);
+      }
       
       // Try multiple patterns for menu items
       const patterns = [
@@ -102,6 +145,7 @@ export class MenuPDFParser {
           }
           
           if (name && price > 0) {
+            this.log(`Found menu item: "${name}" - $${price}`);
             const category = this.categorizeItem(name, description);
             const servingSize = this.estimateServingSize(name, description);
             
