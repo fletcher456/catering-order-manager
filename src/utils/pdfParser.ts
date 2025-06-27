@@ -26,6 +26,8 @@ interface MenuRegion {
     height: number;
   };
   confidence: number;
+  pageNumber: number;
+  pageHeight: number;
 }
 
 export class MenuPDFParser {
@@ -60,6 +62,7 @@ export class MenuPDFParser {
       
       let allText = '';
       let textItems: TextItem[] = [];
+      const pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[] = [];
       
       // Extract text from all pages
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
@@ -70,6 +73,10 @@ export class MenuPDFParser {
         
         const textContent = await page.getTextContent();
         this.log(`Page ${pageNum}: Found ${textContent.items.length} text items`);
+        
+        // Get page dimensions for region extraction
+        const viewport = page.getViewport({ scale: 1.0 });
+        const pageHeight = viewport.height;
         
         // Preserve spatial information for better parsing
         const pageItems = textContent.items.map((item: any) => ({
@@ -82,6 +89,13 @@ export class MenuPDFParser {
           fontName: item.fontName || 'unknown'
         }));
         
+        // Store page data for region extraction
+        pageData.push({
+          textItems: pageItems,
+          pageNum,
+          pageHeight
+        });
+        
         textItems.push(...pageItems);
         const pageText = textContent.items.map((item: any) => item.str).join(' ');
         allText += pageText + '\n';
@@ -93,11 +107,11 @@ export class MenuPDFParser {
       this.log(`Total text items collected: ${textItems.length}`);
       
       this.log('Starting topological region analysis...');
-      const regions = this.detectMenuRegions(textItems);
+      const regions = this.detectMenuRegions(pageData);
       this.log(`Found ${regions.length} potential menu regions`);
       
-      this.log('Extracting menu items from regions...');
-      const menuItems = this.extractMenuItemsFromRegions(regions, allText);
+      this.log('Extracting menu items with PDF region images...');
+      const menuItems = await this.extractMenuItemsWithRegions(regions, allText, pdf);
       this.log(`Menu parsing complete. Found ${menuItems.length} items`);
       
       return menuItems;
@@ -113,39 +127,40 @@ export class MenuPDFParser {
    * Phase 1: Spatial Clustering Algorithm
    * Groups text elements into coherent rectangular regions based on proximity
    */
-  private detectMenuRegions(textItems: TextItem[]): MenuRegion[] {
+  private detectMenuRegions(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): MenuRegion[] {
     this.log('Applying spatial clustering algorithm...');
+    const allRegions: MenuRegion[] = [];
     
-    // Filter out very small text items (likely noise)
-    const validItems = textItems.filter(item => 
-      item.text.trim().length > 0 && 
-      item.width > 0 && 
-      item.height > 0
-    );
-    
-    this.log(`Filtered ${validItems.length} valid text items from ${textItems.length} total`);
-    
-    // Phase 1: Sort by Y coordinate and group into horizontal bands
-    const sortedItems = [...validItems].sort((a, b) => b.y - a.y); // PDF coordinates are bottom-up
-    const horizontalBands = this.groupIntoHorizontalBands(sortedItems);
-    this.log(`Created ${horizontalBands.length} horizontal bands`);
-    
-    // Phase 2: Within each band, cluster by X coordinate proximity
-    const regions: MenuRegion[] = [];
-    
-    for (let bandIndex = 0; bandIndex < horizontalBands.length; bandIndex++) {
-      const band = horizontalBands[bandIndex];
-      const bandRegions = this.clusterBandIntoRegions(band);
-      regions.push(...bandRegions);
+    for (const page of pageData) {
+      // Filter out very small text items (likely noise)
+      const validItems = page.textItems.filter(item => 
+        item.text.trim().length > 0 && 
+        item.width > 0 && 
+        item.height > 0
+      );
       
-      if (bandIndex % 10 === 0) {
-        this.log(`Processed band ${bandIndex}/${horizontalBands.length}, found ${bandRegions.length} regions`);
+      this.log(`Page ${page.pageNum}: Filtered ${validItems.length} valid text items from ${page.textItems.length} total`);
+      
+      // Phase 1: Sort by Y coordinate and group into horizontal bands
+      const sortedItems = [...validItems].sort((a, b) => b.y - a.y); // PDF coordinates are bottom-up
+      const horizontalBands = this.groupIntoHorizontalBands(sortedItems);
+      this.log(`Page ${page.pageNum}: Created ${horizontalBands.length} horizontal bands`);
+      
+      // Phase 2: Within each band, cluster by X coordinate proximity
+      for (let bandIndex = 0; bandIndex < horizontalBands.length; bandIndex++) {
+        const band = horizontalBands[bandIndex];
+        const bandRegions = this.clusterBandIntoRegions(band, page.pageNum, page.pageHeight);
+        allRegions.push(...bandRegions);
+        
+        if (bandIndex % 10 === 0) {
+          this.log(`Page ${page.pageNum}: Processed band ${bandIndex}/${horizontalBands.length}, found ${bandRegions.length} regions`);
+        }
       }
     }
     
     // Phase 3: Filter and validate regions
-    const validRegions = this.filterAndValidateRegions(regions);
-    this.log(`Filtered to ${validRegions.length} valid menu regions`);
+    const validRegions = this.filterAndValidateRegions(allRegions);
+    this.log(`Filtered to ${validRegions.length} valid menu regions across all pages`);
     
     return validRegions;
   }
@@ -182,7 +197,7 @@ export class MenuPDFParser {
   /**
    * Clusters text items within a horizontal band into regions based on X-coordinate proximity
    */
-  private clusterBandIntoRegions(band: TextItem[]): MenuRegion[] {
+  private clusterBandIntoRegions(band: TextItem[], pageNum: number, pageHeight: number): MenuRegion[] {
     if (band.length === 0) return [];
     
     // Sort by X coordinate
@@ -204,7 +219,7 @@ export class MenuPDFParser {
       } else {
         // Create region from current items and start new region
         if (currentRegionItems.length > 0) {
-          regions.push(this.createRegionFromItems(currentRegionItems));
+          regions.push(this.createRegionFromItems(currentRegionItems, pageNum, pageHeight));
         }
         currentRegionItems = [item];
       }
@@ -212,7 +227,7 @@ export class MenuPDFParser {
     
     // Add final region
     if (currentRegionItems.length > 0) {
-      regions.push(this.createRegionFromItems(currentRegionItems));
+      regions.push(this.createRegionFromItems(currentRegionItems, pageNum, pageHeight));
     }
     
     return regions;
@@ -221,7 +236,7 @@ export class MenuPDFParser {
   /**
    * Creates a MenuRegion from a collection of text items
    */
-  private createRegionFromItems(items: TextItem[]): MenuRegion {
+  private createRegionFromItems(items: TextItem[], pageNum: number, pageHeight: number): MenuRegion {
     // Calculate bounding box
     const minX = Math.min(...items.map(item => item.x));
     const maxX = Math.max(...items.map(item => item.x + item.width));
@@ -241,7 +256,9 @@ export class MenuPDFParser {
     return {
       items,
       boundingBox,
-      confidence
+      confidence,
+      pageNumber: pageNum,
+      pageHeight
     };
   }
 
@@ -289,7 +306,39 @@ export class MenuPDFParser {
   }
 
   /**
-   * Extracts menu items from detected regions using enhanced pattern matching
+   * Extracts menu items from detected regions with PDF region images
+   */
+  private async extractMenuItemsWithRegions(regions: MenuRegion[], fallbackText: string, pdf: any): Promise<MenuItem[]> {
+    this.log('Extracting menu items with PDF region images...');
+    const menuItems: MenuItem[] = [];
+    
+    for (let i = 0; i < regions.length; i++) {
+      const region = regions[i];
+      const regionText = region.items.map(item => item.text).join(' ').trim();
+      
+      if (i % 20 === 0) {
+        this.log(`Processing region ${i}/${regions.length}: "${regionText.substring(0, 50)}..."`);
+      }
+      
+      const item = await this.parseMenuItemFromRegionWithImage(region, pdf);
+      if (item) {
+        menuItems.push(item);
+      }
+    }
+    
+    // If topological parsing yields few results, fall back to text-based parsing
+    if (menuItems.length < 5) {
+      this.log('Low yield from topological parsing, applying fallback text analysis...');
+      const fallbackItems = this.parseMenuItems(fallbackText, []);
+      menuItems.push(...fallbackItems);
+    }
+    
+    // Remove duplicates and clean up
+    return this.deduplicateItems(menuItems);
+  }
+
+  /**
+   * Extracts menu items from detected regions using enhanced pattern matching (fallback)
    */
   private extractMenuItemsFromRegions(regions: MenuRegion[], fallbackText: string): MenuItem[] {
     this.log('Extracting menu items from topological regions...');
@@ -321,7 +370,123 @@ export class MenuPDFParser {
   }
 
   /**
-   * Parses a single menu item from a topological region
+   * Parses a single menu item from a topological region with extracted PDF image
+   */
+  private async parseMenuItemFromRegionWithImage(region: MenuRegion, pdf: any): Promise<MenuItem | null> {
+    const items = region.items.sort((a, b) => a.x - b.x); // Sort left to right
+    const allText = items.map(item => item.text).join(' ').trim();
+    
+    // Extract PDF region as image
+    const regionImage = await this.extractRegionImage(region, pdf);
+    
+    // Look for price in the region
+    let price = 0;
+    let priceText = '';
+    let nameAndDescription = allText;
+    
+    // Find price pattern
+    const priceMatch = allText.match(/\$?(\d+\.?\d*)/);
+    if (priceMatch) {
+      price = parseFloat(priceMatch[1]);
+      priceText = priceMatch[0];
+      nameAndDescription = allText.replace(priceMatch[0], '').trim();
+    }
+    
+    // Split name and description
+    let name = nameAndDescription;
+    let description = '';
+    
+    // Common patterns for separating name and description
+    const separators = [' - ', ' • ', ' | ', '  ', '\n'];
+    for (const separator of separators) {
+      const parts = nameAndDescription.split(separator);
+      if (parts.length >= 2) {
+        name = parts[0].trim();
+        description = parts.slice(1).join(separator).trim();
+        break;
+      }
+    }
+    
+    // Validate the extracted data
+    if (!name || name.length < 2) return null;
+    if (price <= 0) return null;
+    
+    return {
+      id: `region-${region.boundingBox.x}-${region.boundingBox.y}`,
+      name: this.cleanItemName(name),
+      price,
+      description: description || undefined,
+      category: this.categorizeItem(name, description),
+      servingSize: this.estimateServingSize(name, description),
+      regionImage, // Base64 encoded image of the PDF region
+      confidence: region.confidence
+    };
+  }
+
+  /**
+   * Extracts a rectangular region from PDF as base64 image
+   */
+  private async extractRegionImage(region: MenuRegion, pdf: any): Promise<string | undefined> {
+    try {
+      // Get the page containing this region
+      const page = await pdf.getPage(region.pageNumber);
+      
+      // Calculate scale factor for high-quality extraction
+      const scale = 2.0; // 2x resolution for crisp text
+      const viewport = page.getViewport({ scale });
+      
+      // Create canvas for rendering
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) return undefined;
+      
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+      
+      // Render the entire page first
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport
+      };
+      
+      await page.render(renderContext).promise;
+      
+      // Calculate region coordinates (PDF uses bottom-up coordinates, canvas uses top-down)
+      const regionX = region.boundingBox.x * scale;
+      const regionY = (region.pageHeight - region.boundingBox.y - region.boundingBox.height) * scale;
+      const regionWidth = region.boundingBox.width * scale;
+      const regionHeight = region.boundingBox.height * scale;
+      
+      // Add some padding around the region for better visual context
+      const padding = 10 * scale;
+      const extractX = Math.max(0, regionX - padding);
+      const extractY = Math.max(0, regionY - padding);
+      const extractWidth = Math.min(canvas.width - extractX, regionWidth + 2 * padding);
+      const extractHeight = Math.min(canvas.height - extractY, regionHeight + 2 * padding);
+      
+      // Extract the region using getImageData
+      const imageData = context.getImageData(extractX, extractY, extractWidth, extractHeight);
+      
+      // Create a new canvas for the extracted region
+      const regionCanvas = document.createElement('canvas');
+      const regionContext = regionCanvas.getContext('2d');
+      if (!regionContext) return undefined;
+      
+      regionCanvas.width = extractWidth;
+      regionCanvas.height = extractHeight;
+      regionContext.putImageData(imageData, 0, 0);
+      
+      // Convert to base64
+      return regionCanvas.toDataURL('image/png', 0.9);
+      
+    } catch (error) {
+      this.log(`Failed to extract region image: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Parses a single menu item from a topological region (fallback without image)
    */
   private parseMenuItemFromRegion(region: MenuRegion): MenuItem | null {
     const items = region.items.sort((a, b) => a.x - b.x); // Sort left to right

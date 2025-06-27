@@ -5,6 +5,8 @@ export interface MenuItem {
   description?: string;
   category: string;
   servingSize?: number;
+  regionImage?: string; // Base64 encoded image of the extracted PDF region
+  confidence?: number; // Confidence score from topological analysis
 }
 
 export interface CateringOrder {

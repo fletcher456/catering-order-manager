@@ -92,6 +92,7 @@ A React-based catering order management system that parses restaurant menu PDFs 
 - June 27, 2025: Fixed GitHub Actions build error by updating workflow to use direct Vite commands
 - June 27, 2025: Comprehensive documentation and README created
 - June 27, 2025: Implemented advanced topological region detection algorithms for enhanced PDF parsing
+- June 27, 2025: Added PDF region extraction as embedded image slices with visual validation alongside menu items
 
 ## Recent Issues Resolved
 
@@ -139,6 +140,24 @@ A React-based catering order management system that parses restaurant menu PDFs 
   - Confidence scoring validates regions based on price patterns, text length, and font consistency
   - Region-based parsing extracts structured menu items with improved accuracy
 - **Status**: ✓ Implemented - advanced parsing now uses topological analysis for superior menu item detection
+
+### PDF Region Extraction and Visual Validation
+- **Enhancement**: Implemented PDF region extraction to capture rectangular regions as embedded image slices
+- **Features**:
+  - High-resolution PDF region rendering with 2x scale for crisp text display
+  - Base64 image encoding for seamless embedding in menu item display
+  - Visual validation showing exact PDF content alongside extracted data
+  - Confidence score display for topological analysis quality assessment
+- **Technical Implementation**:
+  - Canvas-based PDF page rendering with precise coordinate transformation
+  - Rectangular region cropping with padding for visual context
+  - Coordinate system conversion from PDF bottom-up to canvas top-down
+  - Error handling for robust region extraction across different PDF formats
+- **UI Integration**:
+  - Side-by-side display of PDF region images and extracted menu item data
+  - Compact 32x20 pixel region thumbnails with confidence percentages
+  - Visual proof of parsing accuracy for user validation and debugging
+- **Status**: ✓ Implemented - PDF regions now extracted as visual validation alongside menu items
 
 ## User Preferences
 
