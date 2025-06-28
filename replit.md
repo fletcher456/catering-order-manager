@@ -100,6 +100,7 @@ A React-based catering order management system that parses restaurant menu PDFs 
 - June 28, 2025: Complete application rewrite implementing full Adaptive Bayesian Optimization Engine with all 4 processing phases
 - June 28, 2025: Integrated real-time optimization progress tracking, visual PDF region extraction, and comprehensive processing metrics display
 - June 28, 2025: Implemented Chinese restaurant mode supporting name/price pairs without descriptions for simplified menu formats
+- June 28, 2025: Enhanced Chinese restaurant mode with visual box detection for English menus with name/picture/price layouts in darker boxes
 
 ## Recent Issues Resolved
 

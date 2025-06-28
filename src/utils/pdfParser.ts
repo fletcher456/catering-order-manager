@@ -43,6 +43,8 @@ export class MenuPDFParser {
   private processingStartTime: number = 0;
   private documentFeatures?: DocumentFeatures;
   private chineseRestaurantMode: boolean = false;
+  private pageCanvasCache: Map<number, HTMLCanvasElement> = new Map();
+  private detectedRegions: MenuRegion[] = [];
   
   // Optimization results cache
   private currentParameters?: OptimizationParameters;
@@ -133,6 +135,12 @@ export class MenuPDFParser {
       const optimizationResult = await this.runOptimization(pageData);
       this.currentParameters = optimizationResult.parameters;
 
+      // Chinese restaurant mode: detect visual boxes first
+      if (this.chineseRestaurantMode) {
+        this.updateState('box_detection', 40, 'Detecting visual menu boxes');
+        await this.detectVisualBoxes(pageData, optimizationResult.parameters);
+      }
+
       // Execute optimized pipeline
       this.updateState('processing', 50, 'Processing with optimized parameters');
       const menuItems = await this.executeOptimizedPipeline(pageData, pdf);
@@ -171,6 +179,11 @@ export class MenuPDFParser {
       const page = await pdf.getPage(pageNum);
       const viewport = page.getViewport({ scale: 1 });
       const textContent = await page.getTextContent();
+      
+      // Cache page canvas for Chinese restaurant mode
+      if (this.chineseRestaurantMode) {
+        await this.cachePageCanvas(page, pageNum);
+      }
       
       const textItems: TextItem[] = textContent.items.map((item: any) => ({
         text: item.str,
@@ -1059,5 +1072,303 @@ export class MenuPDFParser {
       .replace(/^\d+\.?\s*/, '') // Remove leading numbers
       .replace(/\s+/g, ' ')      // Normalize whitespace
       .trim();
+  }
+
+  // Visual Box Detection for Chinese Restaurant Mode
+  private async cachePageCanvas(page: any, pageNum: number): Promise<void> {
+    const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better detection
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d')!;
+    
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+    
+    await page.render(renderContext).promise;
+    this.pageCanvasCache.set(pageNum, canvas);
+    
+    this.log(`Cached canvas for page ${pageNum} (${canvas.width}x${canvas.height})`, 'info', 'box_detection');
+  }
+
+  private async detectVisualBoxes(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], params: OptimizationParameters): Promise<void> {
+    this.log('Starting visual box detection for Chinese restaurant mode', 'info', 'box_detection');
+    
+    for (const page of pageData) {
+      const canvas = this.pageCanvasCache.get(page.pageNum);
+      if (!canvas) continue;
+      
+      // Analyze page background and detect darker regions
+      const darkRegions = this.detectDarkRegions(canvas);
+      this.log(`Found ${darkRegions.length} potential dark regions on page ${page.pageNum}`, 'info', 'box_detection');
+      
+      // Validate regions as menu item boxes
+      const menuBoxes = this.validateMenuBoxes(darkRegions, page.textItems, canvas, page.pageHeight);
+      this.log(`Validated ${menuBoxes.length} menu boxes on page ${page.pageNum}`, 'info', 'box_detection');
+      
+      // Extract menu items from validated boxes
+      await this.extractMenuItemsFromBoxes(menuBoxes, page, canvas);
+    }
+  }
+
+  private detectDarkRegions(canvas: HTMLCanvasElement): { x: number, y: number, width: number, height: number, contrast: number }[] {
+    const context = canvas.getContext('2d')!;
+    const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    // Calculate overall page brightness
+    let totalBrightness = 0;
+    let pixelCount = 0;
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const brightness = (r + g + b) / 3;
+      totalBrightness += brightness;
+      pixelCount++;
+    }
+    
+    const avgBrightness = totalBrightness / pixelCount;
+    const contrastThreshold = avgBrightness * 0.7; // 30% darker than average
+    
+    this.log(`Page average brightness: ${avgBrightness.toFixed(1)}, contrast threshold: ${contrastThreshold.toFixed(1)}`, 'debug', 'box_detection');
+    
+    // Scan for rectangular dark regions
+    const darkRegions: { x: number, y: number, width: number, height: number, contrast: number }[] = [];
+    const minBoxSize = 80; // Minimum box size in pixels
+    const stepSize = 20; // Scan step size for performance
+    
+    for (let y = 0; y < canvas.height - minBoxSize; y += stepSize) {
+      for (let x = 0; x < canvas.width - minBoxSize; x += stepSize) {
+        // Sample region brightness
+        const regionBrightness = this.calculateRegionBrightness(imageData, x, y, minBoxSize, minBoxSize);
+        
+        if (regionBrightness < contrastThreshold) {
+          // Find the full extent of this dark region
+          const region = this.expandDarkRegion(imageData, x, y, contrastThreshold, canvas.width, canvas.height);
+          
+          if (region.width >= minBoxSize && region.height >= minBoxSize) {
+            const contrast = (avgBrightness - regionBrightness) / avgBrightness;
+            darkRegions.push({ ...region, contrast });
+            
+            // Skip ahead to avoid overlapping detections
+            x += region.width;
+          }
+        }
+      }
+    }
+    
+    return this.mergeSimilarRegions(darkRegions);
+  }
+
+  private calculateRegionBrightness(imageData: ImageData, x: number, y: number, width: number, height: number): number {
+    const data = imageData.data;
+    let totalBrightness = 0;
+    let pixelCount = 0;
+    
+    for (let dy = 0; dy < height && y + dy < imageData.height; dy++) {
+      for (let dx = 0; dx < width && x + dx < imageData.width; dx++) {
+        const pixelIndex = ((y + dy) * imageData.width + (x + dx)) * 4;
+        const r = data[pixelIndex];
+        const g = data[pixelIndex + 1];
+        const b = data[pixelIndex + 2];
+        const brightness = (r + g + b) / 3;
+        totalBrightness += brightness;
+        pixelCount++;
+      }
+    }
+    
+    return pixelCount > 0 ? totalBrightness / pixelCount : 255;
+  }
+
+  private expandDarkRegion(imageData: ImageData, startX: number, startY: number, threshold: number, maxWidth: number, maxHeight: number): { x: number, y: number, width: number, height: number } {
+    let minX = startX, maxX = startX;
+    let minY = startY, maxY = startY;
+    
+    // Expand horizontally
+    while (minX > 0 && this.calculateRegionBrightness(imageData, minX - 10, startY, 10, 10) < threshold) {
+      minX -= 10;
+    }
+    while (maxX < maxWidth - 10 && this.calculateRegionBrightness(imageData, maxX + 10, startY, 10, 10) < threshold) {
+      maxX += 10;
+    }
+    
+    // Expand vertically
+    while (minY > 0 && this.calculateRegionBrightness(imageData, startX, minY - 10, 10, 10) < threshold) {
+      minY -= 10;
+    }
+    while (maxY < maxHeight - 10 && this.calculateRegionBrightness(imageData, startX, maxY + 10, 10, 10) < threshold) {
+      maxY += 10;
+    }
+    
+    return {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY
+    };
+  }
+
+  private mergeSimilarRegions(regions: { x: number, y: number, width: number, height: number, contrast: number }[]): { x: number, y: number, width: number, height: number, contrast: number }[] {
+    const merged: { x: number, y: number, width: number, height: number, contrast: number }[] = [];
+    const used = new Set<number>();
+    
+    for (let i = 0; i < regions.length; i++) {
+      if (used.has(i)) continue;
+      
+      let currentRegion = regions[i];
+      used.add(i);
+      
+      // Try to merge with other regions
+      for (let j = i + 1; j < regions.length; j++) {
+        if (used.has(j)) continue;
+        
+        const otherRegion = regions[j];
+        if (this.regionsOverlap(currentRegion, otherRegion, 20)) {
+          // Merge regions
+          const minX = Math.min(currentRegion.x, otherRegion.x);
+          const minY = Math.min(currentRegion.y, otherRegion.y);
+          const maxX = Math.max(currentRegion.x + currentRegion.width, otherRegion.x + otherRegion.width);
+          const maxY = Math.max(currentRegion.y + currentRegion.height, otherRegion.y + otherRegion.height);
+          
+          currentRegion = {
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY,
+            contrast: Math.max(currentRegion.contrast, otherRegion.contrast)
+          };
+          used.add(j);
+        }
+      }
+      
+      merged.push(currentRegion);
+    }
+    
+    return merged;
+  }
+
+  private regionsOverlap(region1: { x: number, y: number, width: number, height: number }, region2: { x: number, y: number, width: number, height: number }, tolerance: number): boolean {
+    return !(region1.x + region1.width + tolerance < region2.x ||
+             region2.x + region2.width + tolerance < region1.x ||
+             region1.y + region1.height + tolerance < region2.y ||
+             region2.y + region2.height + tolerance < region1.y);
+  }
+
+  private validateMenuBoxes(darkRegions: { x: number, y: number, width: number, height: number, contrast: number }[], textItems: TextItem[], canvas: HTMLCanvasElement, pageHeight: number): { x: number, y: number, width: number, height: number, contrast: number, layout: 'valid' | 'invalid' }[] {
+    const validBoxes: { x: number, y: number, width: number, height: number, contrast: number, layout: 'valid' | 'invalid' }[] = [];
+    
+    for (const region of darkRegions) {
+      // Convert canvas coordinates to PDF coordinates
+      const scale = canvas.height / pageHeight;
+      const pdfRegion = {
+        x: region.x / scale,
+        y: (canvas.height - region.y - region.height) / scale, // Flip Y coordinate
+        width: region.width / scale,
+        height: region.height / scale
+      };
+      
+      // Find text items within this region
+      const regionText = textItems.filter(item => 
+        item.x >= pdfRegion.x &&
+        item.x + item.width <= pdfRegion.x + pdfRegion.width &&
+        item.y >= pdfRegion.y &&
+        item.y + item.height <= pdfRegion.y + pdfRegion.height
+      );
+      
+      // Validate layout: name at top, price at bottom, sparse middle
+      const layoutValid = this.validateBoxLayout(regionText, pdfRegion);
+      
+      if (layoutValid && regionText.length >= 2) {
+        validBoxes.push({ ...region, layout: 'valid' });
+        this.log(`Valid menu box: ${region.width.toFixed(0)}x${region.height.toFixed(0)} with ${regionText.length} text items`, 'info', 'box_detection');
+      }
+    }
+    
+    return validBoxes;
+  }
+
+  private validateBoxLayout(textItems: TextItem[], region: { x: number, y: number, width: number, height: number }): boolean {
+    if (textItems.length < 2) return false;
+    
+    // Sort items by Y coordinate (top to bottom)
+    const sortedItems = textItems.sort((a, b) => b.y - a.y);
+    
+    // Check for text at top and bottom
+    const topThird = region.y + region.height * 0.67;
+    const bottomThird = region.y + region.height * 0.33;
+    
+    const topItems = sortedItems.filter(item => item.y >= topThird);
+    const bottomItems = sortedItems.filter(item => item.y <= bottomThird);
+    const middleItems = sortedItems.filter(item => item.y > bottomThird && item.y < topThird);
+    
+    // Validate layout requirements
+    const hasTopText = topItems.length > 0;
+    const hasBottomPrice = bottomItems.some(item => /\$\d+/.test(item.text));
+    const sparseMiddle = middleItems.length <= topItems.length + bottomItems.length;
+    
+    return hasTopText && hasBottomPrice && sparseMiddle;
+  }
+
+  private async extractMenuItemsFromBoxes(menuBoxes: { x: number, y: number, width: number, height: number, contrast: number, layout: 'valid' | 'invalid' }[], page: { textItems: TextItem[], pageNum: number, pageHeight: number }, canvas: HTMLCanvasElement): Promise<void> {
+    for (const box of menuBoxes.filter(b => b.layout === 'valid')) {
+      // Convert canvas coordinates to PDF coordinates
+      const scale = canvas.height / page.pageHeight;
+      const pdfRegion = {
+        x: box.x / scale,
+        y: (canvas.height - box.y - box.height) / scale,
+        width: box.width / scale,
+        height: box.height / scale
+      };
+      
+      // Extract text items from this box
+      const boxText = page.textItems.filter(item => 
+        item.x >= pdfRegion.x &&
+        item.x + item.width <= pdfRegion.x + pdfRegion.width &&
+        item.y >= pdfRegion.y &&
+        item.y + item.height <= pdfRegion.y + pdfRegion.height
+      );
+      
+      if (boxText.length >= 2) {
+        // Create enhanced region with visual box information
+        const enhancedRegion: MenuRegion = {
+          items: boxText,
+          boundingBox: pdfRegion,
+          confidence: 0.9 + box.contrast * 0.1, // High confidence for detected boxes
+          pageNumber: page.pageNum,
+          pageHeight: page.pageHeight
+        };
+        
+        // Extract region image using canvas box coordinates
+        try {
+          enhancedRegion.regionImage = await this.extractBoxRegionImage(canvas, box);
+        } catch (error) {
+          this.log(`Failed to extract box region image: ${error}`, 'warn', 'box_detection');
+        }
+        
+        this.detectedRegions.push(enhancedRegion);
+        this.log(`Created enhanced region from visual box: ${boxText.length} items, confidence ${enhancedRegion.confidence.toFixed(3)}`, 'info', 'box_detection');
+      }
+    }
+  }
+
+  private async extractBoxRegionImage(canvas: HTMLCanvasElement, region: { x: number, y: number, width: number, height: number }): Promise<string> {
+    const regionCanvas = document.createElement('canvas');
+    const regionContext = regionCanvas.getContext('2d')!;
+    
+    regionCanvas.width = Math.min(region.width, 200);
+    regionCanvas.height = Math.min(region.height, 150);
+    
+    regionContext.drawImage(
+      canvas,
+      region.x, region.y, region.width, region.height,
+      0, 0, regionCanvas.width, regionCanvas.height
+    );
+    
+    return regionCanvas.toDataURL('image/png');
   }
 }
