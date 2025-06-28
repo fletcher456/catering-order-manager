@@ -30,22 +30,25 @@ The User Interaction Layer provides the primary interface between users and the 
 
 ### Progress Display System
 
-**Purpose**: Provide real-time feedback during PDF processing phases
+**Purpose**: Provide real-time feedback during PDF processing phases and optimization
 
 **Design Principles**:
-- Transparency in processing steps
-- Clear indication of current phase
+- Transparency in processing steps and optimization progress
+- Clear indication of current phase and parameter evaluation
 - Estimated time remaining when possible
-- Graceful handling of processing delays
+- Graceful handling of processing delays and optimization iterations
 
 **Progress Phases**:
-1. **File Loading**: PDF parsing and initialization
-2. **Text Extraction**: Page-by-page content extraction
-3. **Heuristic Analysis**: Number classification and typography fingerprinting
-4. **Spatial Clustering**: Region detection and confidence scoring
-5. **Menu Item Assembly**: Triple parsing and validation
-6. **Bootstrapping**: Fallback processing if needed (conditional)
-7. **Final Validation**: Deduplication and quality assurance
+1. **Parameter Initialization**: Optimization engine setup and parameter space definition
+2. **File Loading**: PDF parsing and initialization
+3. **Text Extraction**: Page-by-page content extraction
+4. **Optimization Iteration**: Bayesian parameter selection and evaluation
+5. **Heuristic Analysis**: Number classification and typography fingerprinting (optimized)
+6. **Spatial Clustering**: Region detection and confidence scoring (optimized)
+7. **Menu Item Assembly**: Triple parsing and validation (optimized)
+8. **Bootstrapping**: Fallback processing if needed (conditional)
+9. **Convergence Analysis**: Optimization quality assessment
+10. **Final Validation**: Deduplication and quality assurance
 
 **Technical Implementation**:
 - Callback-based logging system from parser
@@ -55,7 +58,7 @@ The User Interaction Layer provides the primary interface between users and the 
 
 ### Results Display Interface
 
-**Purpose**: Present extracted menu items with visual validation and confidence metrics
+**Purpose**: Present extracted menu items with visual validation, confidence metrics, and optimization results
 
 **Display Components**:
 
@@ -64,6 +67,7 @@ The User Interaction Layer provides the primary interface between users and the 
 - Individual item cards showing name, description, price
 - Confidence scores displayed as percentage badges
 - Category-based color coding for visual organization
+- Optimization improvement indicators
 
 #### Visual Validation Thumbnails
 - Embedded PDF region images (32x20 pixel thumbnails)
@@ -76,6 +80,13 @@ The User Interaction Layer provides the primary interface between users and the 
 - Category distribution statistics
 - Price range analysis
 - Typography consistency metrics
+- Optimization performance metrics
+
+#### Optimization Results Panel
+- Parameter convergence visualization
+- Performance improvement tracking
+- Exploration vs exploitation balance
+- Final optimization statistics
 
 **Interaction Design**:
 - Expandable/collapsible sections for large menus

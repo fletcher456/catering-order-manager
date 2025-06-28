@@ -6,9 +6,52 @@ The Heuristic Analysis Engine (Phase 0) implements fractal self-similarity princ
 
 ## Core Architecture
 
+### Bayesian Optimization Integration
+
+**Purpose**: Automatically optimize heuristic parameters through intelligent parameter selection
+
+#### Parameter Optimization Framework
+
+```typescript
+interface HeuristicOptimizationParameters {
+  priceClassificationThreshold: number;      // 0.5-0.95 range
+  typographyConsistencyWeight: number;       // 0.1-0.9 range
+  economicClusteringTolerance: number;       // 0.1-0.5 range
+  patternExtractionMinSupport: number;       // 0.2-0.8 range
+  numberClassificationConfidence: number;    // 0.6-0.95 range
+}
+
+class OptimizedHeuristicEngine {
+  private optimizationEngine: AdaptiveBayesianOptimizer;
+  private currentParameters: HeuristicOptimizationParameters;
+  
+  async optimizeHeuristicParameters(documentFeatures: DocumentFeatures): Promise<HeuristicOptimizationParameters> {
+    const parameterSpace = this.defineHeuristicParameterSpace();
+    
+    return await this.optimizationEngine.optimize({
+      parameterSpace,
+      objectiveFunction: (params) => this.evaluateHeuristicPerformance(params, documentFeatures),
+      maxEvaluations: 20,
+      convergenceThreshold: 0.02
+    });
+  }
+  
+  private evaluateHeuristicPerformance(params: HeuristicOptimizationParameters, features: DocumentFeatures): number {
+    // Apply parameters to heuristic analysis
+    const results = this.runHeuristicAnalysisWithParameters(params, features);
+    
+    // Multi-objective scoring
+    return 0.4 * results.classificationAccuracy +
+           0.3 * results.typographyConsistency +
+           0.2 * results.patternExtractionQuality +
+           0.1 * results.processingSpeed;
+  }
+}
+```
+
 ### Number Classification System
 
-**Purpose**: Distinguish between prices, counts, calories, measurements, and item numbers using contextual heuristics
+**Purpose**: Distinguish between prices, counts, calories, measurements, and item numbers using optimized contextual heuristics
 
 #### Classification Categories
 

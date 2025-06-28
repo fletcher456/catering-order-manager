@@ -6,11 +6,57 @@ The Spatial Clustering Algorithm (Phase 1) transforms extracted text elements in
 
 ## Core Algorithm Architecture
 
+### Bayesian Optimization Integration
+
+**Purpose**: Automatically optimize spatial clustering parameters for maximum region detection accuracy
+
+#### Parameter Optimization Framework
+
+```typescript
+interface SpatialOptimizationParameters {
+  yProximityThreshold: number;        // 0.8-3.0 em units
+  xDistanceThreshold: number;         // 3.0-10.0 em units
+  confidenceWeights: {
+    textLengthVariety: number;        // 0.1-0.4
+    pricePattern: number;             // 0.2-0.5
+    itemCount: number;                // 0.1-0.3
+    typography: number;               // 0.05-0.2
+  };
+  minimumConfidenceThreshold: number; // 0.4-0.8
+}
+
+class OptimizedSpatialClusterer {
+  private optimizationEngine: AdaptiveBayesianOptimizer;
+  private currentParameters: SpatialOptimizationParameters;
+  
+  async optimizeSpatialParameters(textItems: TextItem[]): Promise<SpatialOptimizationParameters> {
+    const documentFeatures = this.extractDocumentFeatures(textItems);
+    
+    return await this.optimizationEngine.optimize({
+      parameterSpace: this.defineSpatialParameterSpace(),
+      objectiveFunction: (params) => this.evaluateSpatialPerformance(params, textItems),
+      maxEvaluations: 25,
+      convergenceThreshold: 0.015
+    });
+  }
+  
+  private evaluateSpatialPerformance(params: SpatialOptimizationParameters, textItems: TextItem[]): number {
+    const regions = this.performSpatialClusteringWithParameters(params, textItems);
+    
+    // Multi-objective evaluation
+    return 0.35 * this.calculateRegionQuality(regions) +
+           0.25 * this.calculateCoverageCompleteness(regions, textItems) +
+           0.25 * this.calculateConfidenceDistribution(regions) +
+           0.15 * this.calculateProcessingEfficiency(regions);
+  }
+}
+```
+
 ### Design Philosophy
 
 **Fractal Spatial Organization**: Professional menus exhibit hierarchical spatial organization where menu items form distinct rectangular regions with consistent internal spacing and clear boundaries between items.
 
-**Em-Based Distance Metrics**: Distance thresholds scale with font size, ensuring consistent clustering across documents with different typography scales.
+**Adaptive Em-Based Distance Metrics**: Distance thresholds scale with font size and are optimized through Bayesian parameter selection, ensuring consistent clustering across documents with different typography scales.
 
 ### Multi-Phase Clustering Process
 

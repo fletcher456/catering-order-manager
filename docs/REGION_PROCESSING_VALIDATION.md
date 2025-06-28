@@ -6,9 +6,56 @@ The Region Processing & Validation layer (Phase 2) transforms spatial clusters i
 
 ## Architecture Components
 
+### Bayesian Optimization Integration
+
+**Purpose**: Automatically optimize region processing and validation parameters for maximum quality
+
+#### Parameter Optimization Framework
+
+```typescript
+interface RegionOptimizationParameters {
+  dimensionalConstraints: {
+    minWidthEm: number;                     // 1.5-5.0 range
+    minHeightEm: number;                    // 0.5-2.0 range
+  };
+  heuristicValidationWeights: {
+    nameLength: number;                     // 0.15-0.35
+    descriptionComplexity: number;          // 0.15-0.35
+    priceValidation: number;                // 0.25-0.45
+  };
+  extractionQualityThreshold: number;       // 0.5-0.9 range
+  confidenceFilteringThreshold: number;    // 0.4-0.8 range
+  regionMergingTolerance: number;          // 0.1-0.4 range
+}
+
+class OptimizedRegionProcessor {
+  private optimizationEngine: AdaptiveBayesianOptimizer;
+  private currentParameters: RegionOptimizationParameters;
+  
+  async optimizeRegionParameters(regions: MenuRegion[]): Promise<RegionOptimizationParameters> {
+    return await this.optimizationEngine.optimize({
+      parameterSpace: this.defineRegionParameterSpace(),
+      objectiveFunction: (params) => this.evaluateRegionPerformance(params, regions),
+      maxEvaluations: 25,
+      convergenceThreshold: 0.015
+    });
+  }
+  
+  private evaluateRegionPerformance(params: RegionOptimizationParameters, regions: MenuRegion[]): number {
+    const processedRegions = this.processRegionsWithParameters(params, regions);
+    
+    // Multi-objective evaluation
+    return 0.30 * this.calculateValidationAccuracy(processedRegions) +
+           0.25 * this.calculateExtractionCompleteness(processedRegions) +
+           0.25 * this.calculateConfidenceReliability(processedRegions) +
+           0.20 * this.calculateProcessingEfficiency(processedRegions);
+  }
+}
+```
+
 ### Region Filtering Pipeline
 
-**Purpose**: Apply quality gates to eliminate low-confidence regions before expensive processing
+**Purpose**: Apply optimized quality gates to eliminate low-confidence regions before expensive processing
 
 #### Multi-Criteria Filtering System
 

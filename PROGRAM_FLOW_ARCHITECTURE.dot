@@ -7,6 +7,18 @@ digraph MenuParsingArchitecture {
     edge [fontname="Arial", fontsize=10];
     
     // Color scheme for different components
+    subgraph cluster_optimization_engine {
+        label="Adaptive Bayesian Optimization Engine";
+        style=filled;
+        fillcolor=gold;
+        
+        parameter_space [label="Parameter Space Definition\n• Phase 0-3 parameter bounds\n• Constraint definitions\n• Multi-objective weights", fillcolor=yellow];
+        gaussian_process [label="Gaussian Process Model\n• RBF/Matern kernels\n• Hyperparameter learning\n• Uncertainty quantification", fillcolor=yellow];
+        acquisition_function [label="Acquisition Function\n• Expected Improvement\n• Upper Confidence Bound\n• Probability Improvement", fillcolor=yellow];
+        exploration_scheduler [label="Exploration Weight Scheduler\n• Temperature-like control\n• Exponential/Cosine decay\n• Adaptive cooling", fillcolor=yellow];
+        convergence_detector [label="Convergence Detection\n• Quality improvement tracking\n• Stability analysis\n• Early stopping", fillcolor=yellow];
+    }
+    
     subgraph cluster_user_interaction {
         label="User Interaction Layer";
         style=filled;
@@ -14,8 +26,9 @@ digraph MenuParsingArchitecture {
         
         user_upload [label="PDF Upload\n(Drag & Drop)", fillcolor=lightgreen];
         file_validation [label="File Validation\n• Size limits\n• PDF format check", fillcolor=white];
-        progress_display [label="Progress Display\n• Real-time logging\n• Step tracking", fillcolor=white];
-        results_display [label="Results Display\n• Menu items list\n• Region thumbnails\n• Confidence scores", fillcolor=white];
+        progress_display [label="Progress Display\n• Real-time logging\n• Optimization progress\n• Step tracking", fillcolor=white];
+        results_display [label="Results Display\n• Menu items list\n• Region thumbnails\n• Optimization metrics", fillcolor=white];
+        optimization_control [label="Optimization Control\n• Mode selection\n• Parameter overrides\n• Trade-off preferences", fillcolor=white];
     }
     
     subgraph cluster_pdf_processing {
@@ -148,6 +161,26 @@ digraph MenuParsingArchitecture {
         validation_feedback [label="Validation Feedback\n• Confidence visualization\n• Quality metrics\n• Accuracy indicators", fillcolor=white];
     }
     
+    // Flow connections - Optimization Engine
+    user_upload -> parameter_space;
+    parameter_space -> gaussian_process;
+    gaussian_process -> acquisition_function;
+    acquisition_function -> exploration_scheduler;
+    exploration_scheduler -> convergence_detector;
+    
+    // Optimization control flows
+    optimization_control -> exploration_scheduler [label="user preferences", color=gold];
+    convergence_detector -> results_display [label="optimization metrics", color=gold];
+    
+    // Parameter control flows to all phases
+    exploration_scheduler -> number_classifier [label="Phase 0 params", color=gold, style=bold];
+    exploration_scheduler -> coordinate_sorting [label="Phase 1 params", color=gold, style=bold];
+    exploration_scheduler -> region_filtering [label="Phase 2 params", color=gold, style=bold];
+    exploration_scheduler -> bootstrap_check [label="Phase 3 params", color=gold, style=bold];
+    
+    // Performance feedback to optimization
+    deduplication -> gaussian_process [label="performance evaluation", color=gold, style=bold];
+    
     // Flow connections - User Interaction
     user_upload -> file_validation;
     file_validation -> pdf_loader;
@@ -253,11 +286,13 @@ digraph MenuParsingArchitecture {
         legend_progress [label="Progress Tracking", shape=plaintext];
         legend_feedback [label="Cross-validation", shape=plaintext];
         legend_fractal [label="Fractal Self-similarity", shape=plaintext];
+        legend_optimization [label="Bayesian Optimization", shape=plaintext];
         
         legend_flow -> legend_data [style=dotted, color=blue];
         legend_data -> legend_error [style=dashed, color=red];
         legend_error -> legend_progress [style=dotted, color=orange];
         legend_progress -> legend_feedback [style=dashed, color=purple];
         legend_feedback -> legend_fractal [style=bold, color=darkgreen];
+        legend_fractal -> legend_optimization [style=bold, color=gold];
     }
 }

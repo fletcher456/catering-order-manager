@@ -6,9 +6,58 @@ The Menu Item Assembly & Validation layer transforms validated regions into stru
 
 ## Architecture Components
 
+### Bayesian Optimization Integration
+
+**Purpose**: Automatically optimize assembly and validation parameters for maximum extraction quality
+
+#### Parameter Optimization Framework
+
+```typescript
+interface AssemblyOptimizationParameters {
+  bootstrapQualityThreshold: number;          // 0.6-0.85 range
+  convergenceThreshold: number;               // 0.01-0.1 range
+  maxBootstrapIterations: number;             // 1-5 range
+  deduplicationSimilarityThreshold: number;   // 0.7-0.95 range
+  documentValidationWeights: {
+    uniqueness: number;                       // 0.2-0.4
+    priceDistribution: number;                // 0.3-0.5
+    categoryConsistency: number;              // 0.2-0.4
+  };
+  tripleParsingWeights: {
+    nameValidation: number;                   // 0.25-0.45
+    descriptionValidation: number;            // 0.25-0.45
+    priceValidation: number;                  // 0.30-0.50
+  };
+}
+
+class OptimizedMenuAssembler {
+  private optimizationEngine: AdaptiveBayesianOptimizer;
+  private currentParameters: AssemblyOptimizationParameters;
+  
+  async optimizeAssemblyParameters(regions: MenuRegion[], documentContext: DocumentContext): Promise<AssemblyOptimizationParameters> {
+    return await this.optimizationEngine.optimize({
+      parameterSpace: this.defineAssemblyParameterSpace(),
+      objectiveFunction: (params) => this.evaluateAssemblyPerformance(params, regions, documentContext),
+      maxEvaluations: 30,
+      convergenceThreshold: 0.01
+    });
+  }
+  
+  private evaluateAssemblyPerformance(params: AssemblyOptimizationParameters, regions: MenuRegion[], context: DocumentContext): number {
+    const assemblyResults = this.performMenuAssemblyWithParameters(params, regions, context);
+    
+    // Multi-objective evaluation
+    return 0.35 * assemblyResults.extractionCompleteness +
+           0.25 * assemblyResults.confidenceQuality +
+           0.20 * assemblyResults.convergenceEfficiency +
+           0.20 * assemblyResults.validationAccuracy;
+  }
+}
+```
+
 ### Bootstrapping Phase
 
-**Purpose**: Ensure sufficient extraction quality through fallback processing and convergence analysis
+**Purpose**: Ensure sufficient extraction quality through optimized fallback processing and convergence analysis
 
 #### Bootstrap Assessment Engine
 
