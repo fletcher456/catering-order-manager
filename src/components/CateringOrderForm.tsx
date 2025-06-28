@@ -1,199 +1,311 @@
-import { useState, useMemo } from 'react';
-import { Users, ShoppingCart, DollarSign } from 'lucide-react';
-import { MenuItem, CateringOrder, OrderItem } from '../types';
+import React, { useState } from 'react';
+import { Users, Plus, Minus, ShoppingCart, Star, Brain, TrendingUp, Zap, Target, BarChart3, Clock } from 'lucide-react';
+import { MenuItem, CateringOrder, OrderItem, ProcessingMetrics, OptimizationResult } from '../types';
 
 interface CateringOrderFormProps {
   menuItems: MenuItem[];
+  processingMetrics?: ProcessingMetrics;
+  optimizationResult?: OptimizationResult;
   onOrderGenerated: (order: CateringOrder) => void;
 }
 
 export const CateringOrderForm: React.FC<CateringOrderFormProps> = ({ 
   menuItems, 
+  processingMetrics, 
+  optimizationResult, 
   onOrderGenerated 
 }) => {
-  const [guestCount, setGuestCount] = useState(10);
+  const [guestCount, setGuestCount] = useState<number>(10);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
 
-  const groupedItems = useMemo(() => {
-    return menuItems.reduce((acc, item) => {
-      if (!acc[item.category]) {
-        acc[item.category] = [];
-      }
-      acc[item.category].push(item);
-      return acc;
-    }, {} as Record<string, MenuItem[]>);
-  }, [menuItems]);
+  // Group menu items by category
+  const groupedItems = menuItems.reduce((groups, item) => {
+    const category = item.category;
+    if (!groups[category]) {
+      groups[category] = [];
+    }
+    groups[category].push(item);
+    return groups;
+  }, {} as Record<string, MenuItem[]>);
 
   const calculateRecommendedQuantity = (item: MenuItem): number => {
-    const servingSize = item.servingSize || 1;
+    const servingSize = item.servingSize || 2;
     const baseQuantity = Math.ceil(guestCount / servingSize);
     
-    // Adjust based on category (appetizers need more per person)
-    if (item.category.toLowerCase().includes('appetizer') || item.category.toLowerCase().includes('starter')) {
-      return Math.ceil(baseQuantity * 1.5);
+    // Adjust based on category
+    switch (item.category.toLowerCase()) {
+      case 'appetizers':
+        return Math.ceil(baseQuantity * 0.8);
+      case 'entrees':
+      case 'mains':
+        return baseQuantity;
+      case 'sides':
+        return Math.ceil(baseQuantity * 0.6);
+      case 'desserts':
+        return Math.ceil(baseQuantity * 0.7);
+      case 'beverages':
+        return Math.ceil(guestCount * 1.2);
+      default:
+        return baseQuantity;
     }
-    
-    // Desserts typically need fewer
-    if (item.category.toLowerCase().includes('dessert')) {
-      return Math.ceil(baseQuantity * 0.8);
-    }
-    
-    return baseQuantity;
   };
 
-  const handleQuantityChange = (itemId: string, newQuantity: number) => {
+  const updateQuantity = (itemId: string, change: number) => {
     setQuantities(prev => ({
       ...prev,
-      [itemId]: Math.max(0, newQuantity)
+      [itemId]: Math.max(0, (prev[itemId] || 0) + change)
     }));
   };
 
-  const orderItems = useMemo(() => {
-    return menuItems
-      .map(item => {
-        const quantity = quantities[item.id] || 0;
-        if (quantity === 0) return null;
-        
-        return {
-          ...item,
-          quantity,
-          totalPrice: item.price * quantity
-        };
-      })
-      .filter((item): item is OrderItem => item !== null);
-  }, [menuItems, quantities]);
+  const setRecommendedQuantity = (itemId: string, recommended: number) => {
+    setQuantities(prev => ({
+      ...prev,
+      [itemId]: recommended
+    }));
+  };
 
-  const totalCost = useMemo(() => {
-    return orderItems.reduce((sum, item) => sum + item.totalPrice, 0);
-  }, [orderItems]);
+  const generateOrder = () => {
+    const orderItems: OrderItem[] = menuItems
+      .filter(item => quantities[item.id] > 0)
+      .map(item => ({
+        ...item,
+        quantity: quantities[item.id],
+        totalPrice: item.price * quantities[item.id]
+      }));
 
-  const handleGenerateOrder = () => {
+    const totalCost = orderItems.reduce((sum, item) => sum + item.totalPrice, 0);
+
     const order: CateringOrder = {
       guestCount,
       items: orderItems,
-      totalCost
+      totalCost,
+      processingMetrics,
+      optimizationResult
     };
+
     onOrderGenerated(order);
   };
 
-  const autoFillRecommended = () => {
-    const recommendedQuantities: Record<string, number> = {};
-    menuItems.forEach(item => {
-      recommendedQuantities[item.id] = calculateRecommendedQuantity(item);
-    });
-    setQuantities(recommendedQuantities);
+  const totalItems = Object.values(quantities).reduce((sum, qty) => sum + qty, 0);
+  const totalCost = menuItems.reduce((sum, item) => {
+    const qty = quantities[item.id] || 0;
+    return sum + (item.price * qty);
+  }, 0);
+
+  const getCategoryIcon = (category: string) => {
+    switch (category.toLowerCase()) {
+      case 'appetizers': return <Target className="w-5 h-5" />;
+      case 'entrees':
+      case 'mains': return <Star className="w-5 h-5" />;
+      case 'sides': return <BarChart3 className="w-5 h-5" />;
+      case 'desserts': return <TrendingUp className="w-5 h-5" />;
+      case 'beverages': return <Zap className="w-5 h-5" />;
+      default: return <ShoppingCart className="w-5 h-5" />;
+    }
   };
 
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6">
-      {/* Guest Count Section */}
-      <div className="bg-white rounded-lg shadow-sm border p-6">
-        <div className="flex items-center space-x-3 mb-4">
-          <Users className="h-6 w-6 text-blue-500" />
-          <h2 className="text-xl font-semibold text-gray-800">Guest Count</h2>
+    <div className="w-full max-w-6xl mx-auto p-6 space-y-6">
+      {/* Processing Results Summary */}
+      {(processingMetrics || optimizationResult) && (
+        <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-6 border border-blue-200">
+          <div className="flex items-center mb-4">
+            <Brain className="w-6 h-6 text-blue-600 mr-3" />
+            <h3 className="text-lg font-semibold text-gray-900">Processing Results</h3>
+          </div>
+          
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {processingMetrics && (
+              <>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-blue-600">
+                    {processingMetrics.itemsExtracted}
+                  </div>
+                  <div className="text-sm text-gray-600">Items Extracted</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-purple-600">
+                    {(processingMetrics.averageConfidence * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-sm text-gray-600">Avg Confidence</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-green-600">
+                    {(processingMetrics.processingTime / 1000).toFixed(1)}s
+                  </div>
+                  <div className="text-sm text-gray-600">Processing Time</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-orange-600">
+                    {processingMetrics.optimizationIterations}
+                  </div>
+                  <div className="text-sm text-gray-600">Optimizations</div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {optimizationResult && (
+            <div className="mt-4 p-4 bg-white rounded-lg border border-gray-200">
+              <h4 className="font-medium text-gray-800 mb-2">Optimization Results</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <span className="text-gray-500">Performance:</span>
+                  <span className="ml-2 font-mono text-blue-600">
+                    {optimizationResult.performance.toFixed(3)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Iterations:</span>
+                  <span className="ml-2 font-mono text-purple-600">
+                    {optimizationResult.convergenceMetrics.iterations}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Accuracy:</span>
+                  <span className="ml-2 font-mono text-green-600">
+                    {(optimizationResult.objectiveBreakdown.accuracy * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Speed:</span>
+                  <span className="ml-2 font-mono text-orange-600">
+                    {(optimizationResult.objectiveBreakdown.speed * 100).toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Guest Count Input */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-center mb-4">
+          <Users className="w-6 h-6 text-blue-600 mr-3" />
+          <h3 className="text-lg font-semibold text-gray-900">Guest Count</h3>
         </div>
         
         <div className="flex items-center space-x-4">
-          <label htmlFor="guest-count" className="text-sm font-medium text-gray-700">
-            Number of Guests:
-          </label>
-          <input
-            id="guest-count"
-            type="number"
-            min="1"
-            value={guestCount}
-            onChange={(e) => setGuestCount(parseInt(e.target.value) || 1)}
-            className="w-20 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
           <button
-            onClick={autoFillRecommended}
-            className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors text-sm"
+            onClick={() => setGuestCount(Math.max(1, guestCount - 5))}
+            className="p-2 rounded-md bg-gray-100 hover:bg-gray-200 transition-colors"
           >
-            Auto-fill Recommended
+            <Minus className="w-5 h-5" />
           </button>
+          
+          <input
+            type="number"
+            value={guestCount}
+            onChange={(e) => setGuestCount(Math.max(1, parseInt(e.target.value) || 1))}
+            className="w-24 text-center text-xl font-semibold border border-gray-300 rounded-md px-3 py-2"
+            min="1"
+          />
+          
+          <button
+            onClick={() => setGuestCount(guestCount + 5)}
+            className="p-2 rounded-md bg-gray-100 hover:bg-gray-200 transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+          
+          <span className="text-gray-600">guests</span>
         </div>
       </div>
 
       {/* Menu Items by Category */}
       <div className="space-y-6">
         {Object.entries(groupedItems).map(([category, items]) => (
-          <div key={category} className="bg-white rounded-lg shadow-sm border p-6">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">{category}</h3>
+          <div key={category} className="bg-white rounded-lg border border-gray-200 p-6">
+            <div className="flex items-center mb-4">
+              {getCategoryIcon(category)}
+              <h3 className="text-lg font-semibold text-gray-900 ml-3">{category}</h3>
+              <span className="ml-auto text-sm text-gray-500">{items.length} items</span>
+            </div>
             
             <div className="grid gap-4">
-              {items.map(item => {
+              {items.map((item) => {
+                const recommended = calculateRecommendedQuantity(item);
                 const currentQuantity = quantities[item.id] || 0;
-                const recommendedQuantity = calculateRecommendedQuantity(item);
                 const itemTotal = item.price * currentQuantity;
                 
                 return (
-                  <div key={item.id} className="flex items-start gap-4 p-4 bg-gray-50 rounded-md">
-                    {/* PDF Region Image */}
-                    {item.regionImage && (
-                      <div className="flex-shrink-0">
-                        <div className="w-32 h-20 border border-gray-300 rounded overflow-hidden bg-white">
-                          <img 
-                            src={item.regionImage} 
-                            alt={`PDF region for ${item.name}`}
-                            className="w-full h-full object-contain"
-                          />
-                        </div>
-                        {item.confidence && (
-                          <div className="text-xs text-gray-500 mt-1 text-center">
-                            {Math.round(item.confidence * 100)}%
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    
-                    <div className="flex-1 flex items-center justify-between">
+                  <div key={item.id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="flex items-start justify-between">
                       <div className="flex-1">
-                        <h4 className="font-medium text-gray-800">{item.name}</h4>
+                        <div className="flex items-center space-x-3">
+                          <h4 className="font-medium text-gray-900">{item.name}</h4>
+                          <span className="text-lg font-semibold text-green-600">
+                            ${item.price.toFixed(2)}
+                          </span>
+                          {item.confidence && (
+                            <div className="flex items-center space-x-1">
+                              <Star className="w-4 h-4 text-yellow-500" />
+                              <span className="text-sm text-gray-500">
+                                {(item.confidence * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        
                         {item.description && (
                           <p className="text-sm text-gray-600 mt-1">{item.description}</p>
                         )}
-                        <div className="flex items-center space-x-4 mt-2 text-sm text-gray-500">
-                          <span>${item.price.toFixed(2)} each</span>
-                          {item.servingSize && item.servingSize > 1 && (
-                            <span>Serves {item.servingSize}</span>
+                        
+                        <div className="flex items-center space-x-4 mt-2 text-xs text-gray-500">
+                          <span>Serves {item.servingSize || 2}</span>
+                          <span>Recommended: {recommended}</span>
+                          {item.regionImage && (
+                            <div className="flex items-center space-x-1">
+                              <div className="w-8 h-5 bg-gray-200 rounded border overflow-hidden">
+                                <img 
+                                  src={item.regionImage} 
+                                  alt="PDF region" 
+                                  className="w-full h-full object-cover"
+                                />
+                              </div>
+                              <span>PDF excerpt</span>
+                            </div>
                           )}
-                          <span className="text-blue-600">
-                            Suggested: {recommendedQuantity}
-                          </span>
                         </div>
                       </div>
                       
-                      <div className="flex items-center space-x-4">
+                      <div className="flex items-center space-x-3 ml-4">
+                        <button
+                          onClick={() => setRecommendedQuantity(item.id, recommended)}
+                          className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                        >
+                          Use Rec.
+                        </button>
+                        
                         <div className="flex items-center space-x-2">
                           <button
-                            onClick={() => handleQuantityChange(item.id, currentQuantity - 1)}
-                            className="w-8 h-8 flex items-center justify-center bg-gray-200 hover:bg-gray-300 rounded-md text-gray-600"
+                            onClick={() => updateQuantity(item.id, -1)}
+                            className="p-1 rounded bg-gray-100 hover:bg-gray-200 transition-colors"
                             disabled={currentQuantity === 0}
                           >
-                            -
+                            <Minus className="w-4 h-4" />
                           </button>
                           
-                          <input
-                            type="number"
-                            min="0"
-                            value={currentQuantity}
-                            onChange={(e) => handleQuantityChange(item.id, parseInt(e.target.value) || 0)}
-                            className="w-16 px-2 py-1 text-center border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
+                          <span className="w-12 text-center font-medium">
+                            {currentQuantity}
+                          </span>
                           
                           <button
-                            onClick={() => handleQuantityChange(item.id, currentQuantity + 1)}
-                            className="w-8 h-8 flex items-center justify-center bg-gray-200 hover:bg-gray-300 rounded-md text-gray-600"
+                            onClick={() => updateQuantity(item.id, 1)}
+                            className="p-1 rounded bg-gray-100 hover:bg-gray-200 transition-colors"
                           >
-                            +
+                            <Plus className="w-4 h-4" />
                           </button>
                         </div>
                         
-                        <div className="w-20 text-right">
-                          <span className="font-medium text-gray-800">
-                            ${itemTotal.toFixed(2)}
-                          </span>
-                        </div>
+                        {itemTotal > 0 && (
+                          <div className="text-right">
+                            <div className="font-semibold text-gray-900">
+                              ${itemTotal.toFixed(2)}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -205,38 +317,32 @@ export const CateringOrderForm: React.FC<CateringOrderFormProps> = ({
       </div>
 
       {/* Order Summary */}
-      {orderItems.length > 0 && (
-        <div className="bg-white rounded-lg shadow-sm border p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <ShoppingCart className="h-6 w-6 text-green-500" />
-            <h3 className="text-lg font-semibold text-gray-800">Order Summary</h3>
-          </div>
-          
-          <div className="space-y-2 mb-4">
-            {orderItems.map(item => (
-              <div key={item.id} className="flex justify-between text-sm">
-                <span>{item.name} (×{item.quantity})</span>
-                <span>${item.totalPrice.toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-          
-          <div className="border-t pt-4">
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-lg font-semibold">Total Cost:</span>
-              <span className="text-2xl font-bold text-green-600">${totalCost.toFixed(2)}</span>
+      {totalItems > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">Order Summary</h3>
+            <div className="text-right">
+              <div className="text-sm text-gray-600">{totalItems} items selected</div>
+              <div className="text-sm text-gray-600">For {guestCount} guests</div>
             </div>
-            <div className="flex justify-between items-center text-sm text-gray-600 mb-4">
-              <span>Cost per guest:</span>
-              <span>${(totalCost / guestCount).toFixed(2)}</span>
+          </div>
+          
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-2xl font-bold text-gray-900">
+                ${totalCost.toFixed(2)}
+              </div>
+              <div className="text-sm text-gray-600">
+                ${(totalCost / guestCount).toFixed(2)} per guest
+              </div>
             </div>
             
             <button
-              onClick={handleGenerateOrder}
-              className="w-full bg-green-500 text-white py-3 px-4 rounded-md hover:bg-green-600 transition-colors font-medium flex items-center justify-center space-x-2"
+              onClick={generateOrder}
+              className="inline-flex items-center px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
             >
-              <DollarSign className="h-5 w-5" />
-              <span>Generate Order Summary</span>
+              <ShoppingCart className="w-5 h-5 mr-2" />
+              Generate Order
             </button>
           </div>
         </div>

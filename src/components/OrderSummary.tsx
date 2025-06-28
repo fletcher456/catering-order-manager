@@ -1,5 +1,5 @@
-import { FC } from 'react';
-import { Download, Printer, Mail, Users, DollarSign } from 'lucide-react';
+import React from 'react';
+import { ShoppingCart, Users, DollarSign, Download, Printer, Mail, Brain, BarChart3, Clock, Target } from 'lucide-react';
 import { CateringOrder } from '../types';
 
 interface OrderSummaryProps {
@@ -8,41 +8,7 @@ interface OrderSummaryProps {
 }
 
 export const OrderSummary: React.FC<OrderSummaryProps> = ({ order, onStartOver }) => {
-  const generateOrderText = (): string => {
-    const timestamp = new Date().toLocaleDateString();
-    let orderText = `CATERING ORDER SUMMARY\n`;
-    orderText += `Generated: ${timestamp}\n`;
-    orderText += `Guest Count: ${order.guestCount}\n`;
-    orderText += `Cost per Guest: $${(order.totalCost / order.guestCount).toFixed(2)}\n\n`;
-    
-    // Group items by category
-    const itemsByCategory = order.items.reduce((acc, item) => {
-      if (!acc[item.category]) {
-        acc[item.category] = [];
-      }
-      acc[item.category].push(item);
-      return acc;
-    }, {} as Record<string, typeof order.items>);
-    
-    Object.entries(itemsByCategory).forEach(([category, items]) => {
-      orderText += `${category.toUpperCase()}\n`;
-      orderText += `${'='.repeat(category.length + 10)}\n`;
-      
-      items.forEach(item => {
-        orderText += `${item.quantity}x ${item.name}`;
-        if (item.description) {
-          orderText += ` - ${item.description}`;
-        }
-        orderText += `\n   $${item.price.toFixed(2)} each = $${item.totalPrice.toFixed(2)}\n`;
-      });
-      orderText += '\n';
-    });
-    
-    orderText += `TOTAL COST: $${order.totalCost.toFixed(2)}\n`;
-    return orderText;
-  };
-
-  const downloadOrder = () => {
+  const handleDownload = () => {
     const orderText = generateOrderText();
     const blob = new Blob([orderText], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -55,8 +21,7 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({ order, onStartOver }
     URL.revokeObjectURL(url);
   };
 
-  const printOrder = () => {
-    const orderText = generateOrderText();
+  const handlePrint = () => {
     const printWindow = window.open('', '_blank');
     if (printWindow) {
       printWindow.document.write(`
@@ -64,11 +29,16 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({ order, onStartOver }
           <head>
             <title>Catering Order</title>
             <style>
-              body { font-family: monospace; white-space: pre-wrap; margin: 20px; }
-              @media print { body { margin: 0; } }
+              body { font-family: Arial, sans-serif; margin: 40px; }
+              .header { text-align: center; margin-bottom: 30px; }
+              .section { margin: 20px 0; }
+              .item { margin: 10px 0; display: flex; justify-content: space-between; }
+              .total { font-weight: bold; border-top: 2px solid #000; padding-top: 10px; }
             </style>
           </head>
-          <body>${orderText}</body>
+          <body>
+            ${generateOrderHTML()}
+          </body>
         </html>
       `);
       printWindow.document.close();
@@ -76,89 +46,247 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({ order, onStartOver }
     }
   };
 
-  const shareByEmail = () => {
+  const handleEmail = () => {
     const orderText = generateOrderText();
-    const subject = encodeURIComponent('Catering Order Summary');
+    const subject = encodeURIComponent('Catering Order Request');
     const body = encodeURIComponent(orderText);
     window.open(`mailto:?subject=${subject}&body=${body}`);
   };
 
+  const generateOrderText = () => {
+    const date = new Date().toLocaleDateString();
+    const time = new Date().toLocaleTimeString();
+    
+    let text = `CATERING ORDER\n`;
+    text += `Generated on ${date} at ${time}\n\n`;
+    text += `Guest Count: ${order.guestCount}\n`;
+    text += `Total Cost: $${order.totalCost.toFixed(2)}\n`;
+    text += `Cost per Guest: $${(order.totalCost / order.guestCount).toFixed(2)}\n\n`;
+    
+    // Group by category
+    const groupedItems = order.items.reduce((groups, item) => {
+      if (!groups[item.category]) {
+        groups[item.category] = [];
+      }
+      groups[item.category].push(item);
+      return groups;
+    }, {} as Record<string, typeof order.items>);
+
+    Object.entries(groupedItems).forEach(([category, items]) => {
+      text += `${category.toUpperCase()}\n`;
+      text += `${'='.repeat(category.length + 10)}\n`;
+      items.forEach(item => {
+        text += `${item.quantity}x ${item.name} @ $${item.price.toFixed(2)} = $${item.totalPrice.toFixed(2)}\n`;
+        if (item.description) {
+          text += `    ${item.description}\n`;
+        }
+      });
+      text += '\n';
+    });
+
+    if (order.processingMetrics) {
+      text += `\nPROCESSING DETAILS\n`;
+      text += `==================\n`;
+      text += `Items Extracted: ${order.processingMetrics.itemsExtracted}\n`;
+      text += `Average Confidence: ${(order.processingMetrics.averageConfidence * 100).toFixed(1)}%\n`;
+      text += `Processing Time: ${(order.processingMetrics.processingTime / 1000).toFixed(1)} seconds\n`;
+      text += `Optimization Iterations: ${order.processingMetrics.optimizationIterations}\n`;
+    }
+
+    return text;
+  };
+
+  const generateOrderHTML = () => {
+    const date = new Date().toLocaleDateString();
+    const time = new Date().toLocaleTimeString();
+    
+    // Group by category
+    const groupedItems = order.items.reduce((groups, item) => {
+      if (!groups[item.category]) {
+        groups[item.category] = [];
+      }
+      groups[item.category].push(item);
+      return groups;
+    }, {} as Record<string, typeof order.items>);
+
+    let html = `
+      <div class="header">
+        <h1>Catering Order</h1>
+        <p>Generated on ${date} at ${time}</p>
+      </div>
+      
+      <div class="section">
+        <h2>Order Summary</h2>
+        <p><strong>Guest Count:</strong> ${order.guestCount}</p>
+        <p><strong>Total Items:</strong> ${order.items.reduce((sum, item) => sum + item.quantity, 0)}</p>
+      </div>
+    `;
+
+    Object.entries(groupedItems).forEach(([category, items]) => {
+      html += `
+        <div class="section">
+          <h3>${category}</h3>
+      `;
+      items.forEach(item => {
+        html += `
+          <div class="item">
+            <span>${item.quantity}x ${item.name}</span>
+            <span>$${item.totalPrice.toFixed(2)}</span>
+          </div>
+        `;
+        if (item.description) {
+          html += `<div style="margin-left: 20px; color: #666; font-size: 0.9em;">${item.description}</div>`;
+        }
+      });
+      html += `</div>`;
+    });
+
+    html += `
+      <div class="section total">
+        <div class="item">
+          <span><strong>Total Cost:</strong></span>
+          <span><strong>$${order.totalCost.toFixed(2)}</strong></span>
+        </div>
+        <div class="item">
+          <span><strong>Cost per Guest:</strong></span>
+          <span><strong>$${(order.totalCost / order.guestCount).toFixed(2)}</strong></span>
+        </div>
+      </div>
+    `;
+
+    return html;
+  };
+
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6">
+    <div className="w-full max-w-4xl mx-auto p-6 space-y-6">
       {/* Header */}
-      <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-        <div className="flex items-center space-x-3 mb-2">
-          <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
-            <span className="text-white font-bold">✓</span>
-          </div>
-          <h2 className="text-2xl font-bold text-green-800">Order Generated Successfully!</h2>
-        </div>
-        <p className="text-green-700">
-          Your catering order has been calculated based on {order.guestCount} guests
-        </p>
+      <div className="text-center">
+        <h2 className="text-3xl font-bold text-gray-900 mb-2">Catering Order Complete</h2>
+        <p className="text-gray-600">Your order has been generated and is ready for export</p>
       </div>
 
-      {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-lg shadow-sm border p-6 text-center">
-          <Users className="h-8 w-8 text-blue-500 mx-auto mb-2" />
-          <div className="text-2xl font-bold text-gray-800">{order.guestCount}</div>
-          <div className="text-sm text-gray-600">Guests</div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border p-6 text-center">
-          <div className="text-2xl font-bold text-gray-800">{order.items.length}</div>
-          <div className="text-sm text-gray-600">Menu Items</div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border p-6 text-center">
-          <DollarSign className="h-8 w-8 text-green-500 mx-auto mb-2" />
-          <div className="text-2xl font-bold text-green-600">
-            ${(order.totalCost / order.guestCount).toFixed(2)}
+      {/* Processing Results */}
+      {(order.processingMetrics || order.optimizationResult) && (
+        <div className="bg-gradient-to-r from-green-50 to-blue-50 rounded-lg p-6 border border-green-200">
+          <div className="flex items-center mb-4">
+            <Brain className="w-6 h-6 text-green-600 mr-3" />
+            <h3 className="text-lg font-semibold text-gray-900">AI Processing Summary</h3>
           </div>
-          <div className="text-sm text-gray-600">Per Guest</div>
-        </div>
-      </div>
+          
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            {order.processingMetrics && (
+              <>
+                <div className="text-center p-3 bg-white rounded-lg">
+                  <div className="text-2xl font-bold text-blue-600">
+                    {order.processingMetrics.itemsExtracted}
+                  </div>
+                  <div className="text-sm text-gray-600">Items Found</div>
+                </div>
+                <div className="text-center p-3 bg-white rounded-lg">
+                  <div className="text-2xl font-bold text-green-600">
+                    {(order.processingMetrics.averageConfidence * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-sm text-gray-600">Confidence</div>
+                </div>
+                <div className="text-center p-3 bg-white rounded-lg">
+                  <div className="text-2xl font-bold text-purple-600">
+                    {(order.processingMetrics.processingTime / 1000).toFixed(1)}s
+                  </div>
+                  <div className="text-sm text-gray-600">Process Time</div>
+                </div>
+                <div className="text-center p-3 bg-white rounded-lg">
+                  <div className="text-2xl font-bold text-orange-600">
+                    {order.processingMetrics.optimizationIterations}
+                  </div>
+                  <div className="text-sm text-gray-600">Optimizations</div>
+                </div>
+              </>
+            )}
+          </div>
 
-      {/* Order Details */}
-      <div className="bg-white rounded-lg shadow-sm border">
-        <div className="p-6 border-b">
-          <h3 className="text-xl font-semibold text-gray-800">Order Details</h3>
+          {order.optimizationResult && (
+            <div className="p-4 bg-white rounded-lg border border-gray-200">
+              <h4 className="font-medium text-gray-800 mb-3 flex items-center">
+                <Target className="w-4 h-4 mr-2" />
+                Bayesian Optimization Results
+              </h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div className="text-center">
+                  <div className="text-lg font-semibold text-blue-600">
+                    {order.optimizationResult.performance.toFixed(3)}
+                  </div>
+                  <div className="text-xs text-gray-600">Overall Score</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-semibold text-green-600">
+                    {(order.optimizationResult.objectiveBreakdown.accuracy * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-xs text-gray-600">Accuracy</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-semibold text-orange-600">
+                    {(order.optimizationResult.objectiveBreakdown.speed * 100).toFixed(0)}%
+                  </div>
+                  <div className="text-xs text-gray-600">Speed</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-semibold text-purple-600">
+                    {order.optimizationResult.convergenceMetrics.iterations}
+                  </div>
+                  <div className="text-xs text-gray-600">Iterations</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-        
-        <div className="p-6 space-y-6">
+      )}
+
+      {/* Order Summary */}
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-xl font-semibold text-gray-900">Order Details</h3>
+          <div className="flex items-center space-x-4 text-sm text-gray-600">
+            <div className="flex items-center">
+              <Users className="w-4 h-4 mr-1" />
+              {order.guestCount} guests
+            </div>
+            <div className="flex items-center">
+              <ShoppingCart className="w-4 h-4 mr-1" />
+              {order.items.reduce((sum, item) => sum + item.quantity, 0)} items
+            </div>
+          </div>
+        </div>
+
+        {/* Items by Category */}
+        <div className="space-y-6">
           {Object.entries(
-            order.items.reduce((acc, item) => {
-              if (!acc[item.category]) {
-                acc[item.category] = [];
+            order.items.reduce((groups, item) => {
+              if (!groups[item.category]) {
+                groups[item.category] = [];
               }
-              acc[item.category].push(item);
-              return acc;
+              groups[item.category].push(item);
+              return groups;
             }, {} as Record<string, typeof order.items>)
           ).map(([category, items]) => (
             <div key={category}>
-              <h4 className="font-medium text-gray-800 mb-3 text-lg">{category}</h4>
+              <h4 className="font-medium text-gray-900 mb-3 pb-2 border-b border-gray-200">
+                {category}
+              </h4>
               <div className="space-y-2">
-                {items.map(item => (
-                  <div key={item.id} className="flex justify-between items-start p-3 bg-gray-50 rounded-md">
+                {items.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between py-2">
                     <div className="flex-1">
-                      <div className="font-medium text-gray-800">
-                        {item.quantity}x {item.name}
+                      <div className="flex items-center space-x-3">
+                        <span className="font-medium">{item.quantity}x</span>
+                        <span className="text-gray-900">{item.name}</span>
+                        <span className="text-sm text-gray-500">@ ${item.price.toFixed(2)}</span>
                       </div>
                       {item.description && (
-                        <div className="text-sm text-gray-600 mt-1">{item.description}</div>
+                        <p className="text-sm text-gray-600 ml-8">{item.description}</p>
                       )}
-                      <div className="text-sm text-gray-500 mt-1">
-                        ${item.price.toFixed(2)} each
-                        {item.servingSize && item.servingSize > 1 && (
-                          <span> • Serves {item.servingSize}</span>
-                        )}
-                      </div>
                     </div>
                     <div className="text-right">
-                      <div className="font-semibold text-gray-800">
-                        ${item.totalPrice.toFixed(2)}
-                      </div>
+                      <span className="font-semibold">${item.totalPrice.toFixed(2)}</span>
                     </div>
                   </div>
                 ))}
@@ -166,49 +294,61 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({ order, onStartOver }
             </div>
           ))}
         </div>
-        
-        <div className="p-6 border-t bg-gray-50">
-          <div className="flex justify-between items-center">
-            <span className="text-xl font-semibold text-gray-800">Total Cost:</span>
-            <span className="text-2xl font-bold text-green-600">
-              ${order.totalCost.toFixed(2)}
-            </span>
+
+        {/* Total */}
+        <div className="border-t border-gray-200 mt-6 pt-6">
+          <div className="flex items-center justify-between text-xl font-bold">
+            <span>Total Cost:</span>
+            <span className="text-green-600">${order.totalCost.toFixed(2)}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm text-gray-600 mt-1">
+            <span>Cost per guest:</span>
+            <span>${(order.totalCost / order.guestCount).toFixed(2)}</span>
           </div>
         </div>
       </div>
 
-      {/* Action Buttons */}
-      <div className="flex flex-wrap gap-3 justify-center">
+      {/* Actions */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <button
-          onClick={downloadOrder}
-          className="flex items-center space-x-2 px-6 py-3 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+          onClick={handleDownload}
+          className="flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
         >
-          <Download className="h-5 w-5" />
-          <span>Download Order</span>
+          <Download className="w-5 h-5 mr-2" />
+          Download
         </button>
         
         <button
-          onClick={printOrder}
-          className="flex items-center space-x-2 px-6 py-3 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors"
+          onClick={handlePrint}
+          className="flex items-center justify-center px-4 py-3 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
         >
-          <Printer className="h-5 w-5" />
-          <span>Print Order</span>
+          <Printer className="w-5 h-5 mr-2" />
+          Print
         </button>
         
         <button
-          onClick={shareByEmail}
-          className="flex items-center space-x-2 px-6 py-3 bg-purple-500 text-white rounded-md hover:bg-purple-600 transition-colors"
+          onClick={handleEmail}
+          className="flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
         >
-          <Mail className="h-5 w-5" />
-          <span>Email Order</span>
+          <Mail className="w-5 h-5 mr-2" />
+          Email
         </button>
         
         <button
           onClick={onStartOver}
-          className="flex items-center space-x-2 px-6 py-3 bg-orange-500 text-white rounded-md hover:bg-orange-600 transition-colors"
+          className="flex items-center justify-center px-4 py-3 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors"
         >
-          <span>Create New Order</span>
+          <ShoppingCart className="w-5 h-5 mr-2" />
+          New Order
         </button>
+      </div>
+
+      {/* Footer */}
+      <div className="text-center text-sm text-gray-500 pt-4">
+        <p>Order generated using advanced AI with Bayesian optimization for maximum accuracy</p>
+        <p className="mt-1">
+          Generated on {new Date().toLocaleDateString()} at {new Date().toLocaleTimeString()}
+        </p>
       </div>
     </div>
   );

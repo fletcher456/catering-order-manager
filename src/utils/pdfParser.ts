@@ -1,170 +1,192 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import { MenuItem } from '../types';
+import { AdaptiveBayesianOptimizer } from './bayesianOptimizer';
+import { 
+  MenuItem, 
+  TextItem, 
+  MenuRegion, 
+  NumberClassification, 
+  TypographyFingerprint, 
+  StructuralPattern,
+  OptimizationParameters,
+  OptimizationResult,
+  ProcessingMetrics,
+  ProcessingState,
+  LogEntry
+} from '../types';
 
 // Configure PDF.js worker to use local bundle
 if (typeof window !== 'undefined') {
-  // Use the locally served worker file
   pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
 }
 
-interface TextItem {
-  text: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  fontSize?: number;
-  fontName?: string;
-  fontWeight?: string;
-  fontStyle?: string;
+interface DocumentFeatures {
+  pageCount: number;
+  totalTextItems: number;
+  avgFontSize: number;
+  pricePatternDensity: number;
+  typographyVariety: number;
+  spatialComplexity: number;
 }
 
-interface TypographyFingerprint {
-  fontFamily: string;
-  fontSize: number;
-  fontWeight: string;
-  avgLength: number;
-  commonPatterns: string[];
-  confidence: number;
-}
-
-interface NumberClassification {
-  value: number;
-  type: 'price' | 'count' | 'calorie' | 'measurement' | 'item_number' | 'unknown';
-  confidence: number;
-  reasoning: string;
-}
-
-interface StructuralPattern {
-  nameFingerprint: TypographyFingerprint;
-  descriptionFingerprint: TypographyFingerprint;
-  priceFingerprint: TypographyFingerprint;
-  spatialRelationships: {
-    nameToDescription: { dx: number; dy: number; tolerance: number };
-    descriptionToPrice: { dx: number; dy: number; tolerance: number };
-    nameToPrice: { dx: number; dy: number; tolerance: number };
-  };
-  confidence: number;
-}
-
-interface MenuRegion {
-  items: TextItem[];
-  boundingBox: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  confidence: number;
-  pageNumber: number;
-  pageHeight: number;
+interface ExtractionResult {
+  menuItems: MenuItem[];
+  processingMetrics: ProcessingMetrics;
+  optimizationResult: OptimizationResult;
+  logs: LogEntry[];
 }
 
 export class MenuPDFParser {
   private logCallback?: (message: string) => void;
-  private documentPatterns: StructuralPattern[] = [];
+  private stateCallback?: (state: ProcessingState) => void;
+  private optimizer: AdaptiveBayesianOptimizer;
+  private logs: LogEntry[] = [];
+  private processingStartTime: number = 0;
+  private documentFeatures?: DocumentFeatures;
+  
+  // Optimization results cache
+  private currentParameters?: OptimizationParameters;
   private numberClassifications: NumberClassification[] = [];
   private typographyProfiles: Map<string, TypographyFingerprint> = new Map();
+  private structuralPatterns: StructuralPattern[] = [];
 
-  setLogCallback(callback: (message: string) => void) {
+  constructor() {
+    this.optimizer = new AdaptiveBayesianOptimizer(
+      25, // maxIterations
+      0.015, // convergenceThreshold
+      (message) => this.log(message, 'debug', 'optimization')
+    );
+  }
+
+  setLogCallback(callback: (message: string) => void): void {
     this.logCallback = callback;
   }
 
-  private log(message: string) {
-    console.log(`[PDF Parser] ${message}`);
+  setStateCallback(callback: (state: ProcessingState) => void): void {
+    this.stateCallback = callback;
+  }
+
+  private log(message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', phase: string = 'general'): void {
+    const entry: LogEntry = {
+      timestamp: Date.now(),
+      phase,
+      level,
+      message
+    };
+    
+    this.logs.push(entry);
+    
     if (this.logCallback) {
-      this.logCallback(`[PDF Parser] ${message}`);
+      this.logCallback(`[${phase.toUpperCase()}] ${message}`);
     }
   }
 
-  async extractMenuFromPDF(file: File): Promise<MenuItem[]> {
+  private updateState(phase: string, progress: number, message: string, optimizationIteration?: number): void {
+    const state: ProcessingState = {
+      phase,
+      progress,
+      message,
+      optimizationIteration,
+      currentParameters: this.currentParameters,
+      metrics: this.getCurrentMetrics()
+    };
+
+    if (this.stateCallback) {
+      this.stateCallback(state);
+    }
+  }
+
+  private getCurrentMetrics(): Partial<ProcessingMetrics> {
+    return {
+      processingTime: Date.now() - this.processingStartTime,
+      optimizationIterations: this.optimizer.getOptimizationMetrics().currentIteration
+    };
+  }
+
+  async extractMenuFromPDF(file: File): Promise<ExtractionResult> {
+    this.processingStartTime = Date.now();
+    this.logs = [];
+    
     try {
-      this.log(`Starting PDF parsing for file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
-      
-      this.log('Converting file to array buffer...');
+      this.updateState('initialization', 0, 'Starting PDF analysis');
+      this.log('Starting comprehensive menu extraction with Bayesian optimization', 'info', 'initialization');
+
+      // Load and analyze PDF
       const arrayBuffer = await file.arrayBuffer();
-      this.log(`Array buffer created: ${arrayBuffer.byteLength} bytes`);
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       
-      this.log('Loading PDF document...');
-      const pdf = await pdfjsLib.getDocument({ 
-        data: arrayBuffer,
-        useWorkerFetch: false,
-        isEvalSupported: false
-      }).promise;
-      this.log(`PDF loaded successfully. Pages: ${pdf.numPages}`);
+      this.updateState('text_extraction', 10, 'Extracting text content from PDF');
+      const pageData = await this.extractTextContent(pdf);
       
-      let allText = '';
-      let textItems: TextItem[] = [];
-      const pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[] = [];
-      
-      // Extract text from all pages with enhanced typography data
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        this.log(`Processing page ${pageNum}/${pdf.numPages}...`);
-        
-        const page = await pdf.getPage(pageNum);
-        this.log(`Page ${pageNum} loaded, extracting text content...`);
-        
-        const textContent = await page.getTextContent();
-        this.log(`Page ${pageNum}: Found ${textContent.items.length} text items`);
-        
-        // Get page dimensions for region extraction
-        const viewport = page.getViewport({ scale: 1.0 });
-        const pageHeight = viewport.height;
-        
-        // Preserve spatial information for better parsing with enhanced typography data
-        const pageItems: TextItem[] = textContent.items.map((item: any) => ({
-          text: item.str,
-          x: item.transform[4],
-          y: item.transform[5],
-          width: item.width,
-          height: item.height,
-          fontSize: item.height,
-          fontName: item.fontName || 'unknown',
-          fontWeight: this.extractFontWeight(item.fontName || ''),
-          fontStyle: this.extractFontStyle(item.fontName || '')
-        }));
-        
-        // Store page data for region extraction
-        pageData.push({
-          textItems: pageItems,
-          pageNum,
-          pageHeight
-        });
-        
-        textItems.push(...pageItems);
-        const pageText = textContent.items.map((item: any) => item.str).join(' ');
-        allText += pageText + '\n';
-        
-        this.log(`Page ${pageNum}: Extracted ${pageText.length} characters`);
-      }
-      
-      this.log(`Text extraction complete. Total characters: ${allText.length}`);
-      this.log(`Total text items collected: ${textItems.length}`);
-      
-      // Phase 0: Heuristic Analysis - Number classification and typography fingerprinting
-      this.log('Phase 0: Performing heuristic analysis...');
-      this.performHeuristicAnalysis(pageData);
-      
-      this.log('Starting topological region analysis...');
-      const regions = this.detectMenuRegions(pageData);
-      this.log(`Found ${regions.length} potential menu regions`);
-      
-      this.log('Extracting menu items with heuristic validation...');
-      const menuItems = await this.extractMenuItemsWithHeuristics(regions, allText, pdf);
-      this.log(`Menu parsing complete. Found ${menuItems.length} items`);
-      
-      return menuItems;
+      // Analyze document features for optimization
+      this.documentFeatures = this.analyzeDocumentFeatures(pageData);
+      this.log(`Analyzed document: ${this.documentFeatures.pageCount} pages, ${this.documentFeatures.totalTextItems} text items`, 'info', 'analysis');
+
+      // Run Bayesian optimization
+      this.updateState('optimization', 20, 'Running Bayesian parameter optimization');
+      const optimizationResult = await this.runOptimization(pageData);
+      this.currentParameters = optimizationResult.parameters;
+
+      // Execute optimized pipeline
+      this.updateState('processing', 50, 'Processing with optimized parameters');
+      const menuItems = await this.executeOptimizedPipeline(pageData, pdf);
+
+      const processingMetrics: ProcessingMetrics = {
+        processingTime: Date.now() - this.processingStartTime,
+        memoryUsage: this.estimateMemoryUsage(),
+        regionsDetected: this.logs.filter(log => log.phase === 'spatial_clustering').length,
+        itemsExtracted: menuItems.length,
+        averageConfidence: menuItems.reduce((sum, item) => sum + (item.confidence || 0), 0) / menuItems.length,
+        optimizationIterations: optimizationResult.convergenceMetrics.iterations
+      };
+
+      this.updateState('complete', 100, `Extracted ${menuItems.length} menu items`);
+      this.log(`Extraction complete: ${menuItems.length} items, ${processingMetrics.averageConfidence.toFixed(2)} avg confidence`, 'info', 'complete');
+
+      return {
+        menuItems,
+        processingMetrics,
+        optimizationResult,
+        logs: this.logs
+      };
+
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.log(`ERROR: ${errorMessage}`);
-      console.error('Error parsing PDF:', error);
-      throw new Error(`Failed to parse PDF: ${errorMessage}`);
+      this.log(`Extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error', 'error');
+      throw error;
     }
   }
 
-  /**
-   * Extracts font weight from font name using heuristic patterns
-   */
+  private async extractTextContent(pdf: any): Promise<{ textItems: TextItem[], pageNum: number, pageHeight: number }[]> {
+    const pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[] = [];
+    
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      this.updateState('text_extraction', 10 + (pageNum / pdf.numPages) * 10, `Extracting text from page ${pageNum}`);
+      
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1 });
+      const textContent = await page.getTextContent();
+      
+      const textItems: TextItem[] = textContent.items.map((item: any) => ({
+        text: item.str,
+        x: item.transform[4],
+        y: viewport.height - item.transform[5], // Convert to top-down coordinates
+        width: item.width,
+        height: item.height,
+        fontSize: item.height,
+        fontName: item.fontName,
+        fontWeight: this.extractFontWeight(item.fontName),
+        fontStyle: this.extractFontStyle(item.fontName)
+      }));
+
+      pageData.push({
+        textItems: textItems.filter(item => item.text.trim().length > 0),
+        pageNum,
+        pageHeight: viewport.height
+      });
+    }
+
+    return pageData;
+  }
+
   private extractFontWeight(fontName: string): string {
     const name = fontName.toLowerCase();
     if (name.includes('bold') || name.includes('heavy') || name.includes('black')) return 'bold';
@@ -173,406 +195,367 @@ export class MenuPDFParser {
     return 'normal';
   }
 
-  /**
-   * Extracts font style from font name using heuristic patterns
-   */
   private extractFontStyle(fontName: string): string {
     const name = fontName.toLowerCase();
     if (name.includes('italic') || name.includes('oblique')) return 'italic';
     return 'normal';
   }
 
-  /**
-   * Phase 0: Heuristic Analysis - Number classification and typography fingerprinting
-   */
-  private performHeuristicAnalysis(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): void {
-    this.log('Performing number classification analysis...');
+  private analyzeDocumentFeatures(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): DocumentFeatures {
+    const allTextItems = pageData.flatMap(page => page.textItems);
     
-    // Collect all numbers from the document
-    const allNumbers: { value: number; text: string; item: TextItem }[] = [];
+    const fontSizes = allTextItems.map(item => item.fontSize || 12);
+    const avgFontSize = fontSizes.reduce((sum, size) => sum + size, 0) / fontSizes.length;
     
-    for (const page of pageData) {
-      for (const item of page.textItems) {
-        const numbers = this.extractNumbers(item.text);
-        numbers.forEach(num => {
-          allNumbers.push({ value: num, text: item.text, item });
-        });
-      }
-    }
+    const pricePatterns = allTextItems.filter(item => /\$\d+\.?\d*/.test(item.text));
+    const pricePatternDensity = pricePatterns.length / allTextItems.length;
     
-    this.log(`Found ${allNumbers.length} numeric values for classification`);
+    const uniqueFonts = new Set(allTextItems.map(item => item.fontName)).size;
+    const uniqueSizes = new Set(fontSizes).size;
+    const typographyVariety = (uniqueFonts + uniqueSizes) / allTextItems.length;
     
-    // Classify each number using heuristic rules
-    this.numberClassifications = allNumbers.map(num => this.classifyNumber(num.value, num.text, num.item));
-    
-    // Build typography fingerprints
-    this.log('Building typography fingerprints...');
-    this.buildTypographyFingerprints(pageData);
-    
-    // Extract structural patterns from high-confidence regions
-    this.log('Extracting structural patterns...');
-    this.extractStructuralPatterns(pageData);
-  }
+    const spatialComplexity = this.calculateSpatialComplexity(allTextItems);
 
-  /**
-   * Extract numbers from text using regex patterns
-   */
-  private extractNumbers(text: string): number[] {
-    const numberMatches = text.match(/\d+\.?\d*/g);
-    if (!numberMatches) return [];
-    
-    return numberMatches.map(match => parseFloat(match)).filter(num => !isNaN(num));
-  }
-
-  /**
-   * Classify a number using heuristic rules from the engineering strategy
-   */
-  private classifyNumber(value: number, text: string, item: TextItem): NumberClassification {
-    // Price indicators
-    if (text.match(/^\$?\d+\.?\d{0,2}$/) && value > 0.5 && value < 200) {
-      return {
-        value,
-        type: 'price',
-        confidence: 0.9,
-        reasoning: 'Currency format with reasonable restaurant pricing range'
-      };
-    }
-    
-    // Calorie indicators
-    if (value >= 100 && value <= 2000 && (text.includes('cal') || text.includes('kcal'))) {
-      return {
-        value,
-        type: 'calorie',
-        confidence: 0.85,
-        reasoning: 'Large number with calorie suffix in typical range'
-      };
-    }
-    
-    // Measurement indicators
-    if (text.match(/\d+\s*(oz|lb|"|'|inch|foot|liter|ml)/i)) {
-      return {
-        value,
-        type: 'measurement',
-        confidence: 0.8,
-        reasoning: 'Number followed by measurement unit'
-      };
-    }
-    
-    // Piece count indicators
-    if (value <= 20 && Number.isInteger(value) && !text.includes('$')) {
-      return {
-        value,
-        type: 'count',
-        confidence: 0.6,
-        reasoning: 'Small integer without currency symbols'
-      };
-    }
-    
-    // Item number indicators
-    if (text.match(/^#?\d+$/) || text.match(/No\.\s*\d+/i)) {
-      return {
-        value,
-        type: 'item_number',
-        confidence: 0.7,
-        reasoning: 'Sequential number with prefix patterns'
-      };
-    }
-    
     return {
-      value,
-      type: 'unknown',
-      confidence: 0.3,
-      reasoning: 'Does not match known heuristic patterns'
+      pageCount: pageData.length,
+      totalTextItems: allTextItems.length,
+      avgFontSize,
+      pricePatternDensity,
+      typographyVariety,
+      spatialComplexity
     };
   }
 
-  /**
-   * Build typography fingerprints for different element types
-   */
-  private buildTypographyFingerprints(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): void {
-    const typeGroups = new Map<string, TextItem[]>();
+  private calculateSpatialComplexity(textItems: TextItem[]): number {
+    if (textItems.length < 2) return 0;
     
-    // Group text items by typography characteristics
-    for (const page of pageData) {
-      for (const item of page.textItems) {
-        const key = `${item.fontName}-${item.fontSize}-${item.fontWeight}`;
-        if (!typeGroups.has(key)) {
-          typeGroups.set(key, []);
-        }
-        typeGroups.get(key)!.push(item);
+    const distances = [];
+    for (let i = 0; i < Math.min(textItems.length, 100); i++) {
+      for (let j = i + 1; j < Math.min(textItems.length, 100); j++) {
+        const dx = textItems[i].x - textItems[j].x;
+        const dy = textItems[i].y - textItems[j].y;
+        distances.push(Math.sqrt(dx * dx + dy * dy));
       }
     }
     
-    // Create fingerprints for each typography group
-    for (const [key, items] of typeGroups) {
-      if (items.length < 3) continue; // Skip groups with too few samples
-      
-      const avgLength = items.reduce((sum, item) => sum + item.text.length, 0) / items.length;
-      const commonPatterns = this.extractCommonPatterns(items.map(item => item.text));
-      
-      const fingerprint: TypographyFingerprint = {
-        fontFamily: items[0].fontName || 'unknown',
-        fontSize: items[0].fontSize || 12,
-        fontWeight: items[0].fontWeight || 'normal',
-        avgLength,
-        commonPatterns,
-        confidence: Math.min(items.length / 10, 1.0) // Higher confidence with more samples
-      };
-      
-      this.typographyProfiles.set(key, fingerprint);
-    }
+    const avgDistance = distances.reduce((sum, d) => sum + d, 0) / distances.length;
+    const variance = distances.reduce((sum, d) => sum + Math.pow(d - avgDistance, 2), 0) / distances.length;
     
-    this.log(`Built ${this.typographyProfiles.size} typography fingerprints`);
+    return Math.sqrt(variance) / avgDistance; // Coefficient of variation
   }
 
-  /**
-   * Extract common patterns from text samples
-   */
-  private extractCommonPatterns(texts: string[]): string[] {
-    const patterns: string[] = [];
+  private async runOptimization(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): Promise<OptimizationResult> {
+    this.log('Starting Bayesian parameter optimization', 'info', 'optimization');
     
-    // Check for common menu item patterns
-    const menuPatterns = [
-      /\b(served|with|topped|fresh|grilled|fried|baked)\b/i,
-      /\$\d+\.\d{2}/,
-      /\b\d+\s*(oz|lb)\b/i,
-      /\b(appetizer|entree|dessert|beverage)\b/i
+    const objectiveFunction = async (params: OptimizationParameters): Promise<number> => {
+      try {
+        // Run abbreviated pipeline for optimization
+        const testResults = await this.evaluateParameters(params, pageData);
+        return testResults.overallScore;
+      } catch (error) {
+        this.log(`Parameter evaluation failed: ${error}`, 'warn', 'optimization');
+        return 0;
+      }
+    };
+
+    return await this.optimizer.optimize(objectiveFunction);
+  }
+
+  private async evaluateParameters(params: OptimizationParameters, pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): Promise<{ overallScore: number; accuracy: number; speed: number; confidence: number; memory: number }> {
+    const startTime = Date.now();
+    
+    try {
+      // Phase 0: Heuristic Analysis
+      const heuristicResults = this.performHeuristicAnalysis(pageData, params.phase0);
+      
+      // Phase 1: Spatial Clustering  
+      const regions = this.detectMenuRegions(pageData, params.phase1);
+      
+      // Phase 2: Region Processing
+      const validatedRegions = this.filterAndValidateRegions(regions, params.phase2);
+      
+      // Phase 3: Menu Assembly (simplified)
+      const menuItems = this.assembleMenuItems(validatedRegions, params.phase3);
+      
+      const processingTime = Date.now() - startTime;
+      
+      // Calculate performance metrics
+      const accuracy = this.calculateAccuracy(menuItems, validatedRegions);
+      const speed = Math.max(0, 1 - (processingTime / 5000)); // Normalize to 5 second baseline
+      const confidence = menuItems.reduce((sum, item) => sum + (item.confidence || 0), 0) / Math.max(menuItems.length, 1);
+      const memory = Math.max(0, 1 - (this.estimateMemoryUsage() / 100000000)); // 100MB baseline
+      
+      const overallScore = 0.4 * accuracy + 0.3 * speed + 0.2 * confidence + 0.1 * memory;
+      
+      return { overallScore, accuracy, speed, confidence, memory };
+      
+    } catch (error) {
+      return { overallScore: 0, accuracy: 0, speed: 0, confidence: 0, memory: 0 };
+    }
+  }
+
+  private calculateAccuracy(menuItems: MenuItem[], regions: MenuRegion[]): number {
+    if (menuItems.length === 0) return 0;
+    
+    // Heuristic accuracy based on extraction completeness and quality
+    const extractionRatio = Math.min(1, menuItems.length / Math.max(regions.length, 1));
+    const avgConfidence = menuItems.reduce((sum, item) => sum + (item.confidence || 0), 0) / menuItems.length;
+    const priceValidation = menuItems.filter(item => item.price > 0).length / menuItems.length;
+    
+    return (extractionRatio + avgConfidence + priceValidation) / 3;
+  }
+
+  private estimateMemoryUsage(): number {
+    // Rough estimation based on data structures
+    const textItemsSize = this.logs.length * 200; // Approximate size per log entry
+    const regionsSize = this.typographyProfiles.size * 500;
+    const classificationsSize = this.numberClassifications.length * 100;
+    
+    return textItemsSize + regionsSize + classificationsSize;
+  }
+
+  private async executeOptimizedPipeline(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], pdf: any): Promise<MenuItem[]> {
+    if (!this.currentParameters) {
+      throw new Error('No optimization parameters available');
+    }
+
+    this.updateState('heuristic_analysis', 55, 'Phase 0: Heuristic Analysis');
+    this.performHeuristicAnalysis(pageData, this.currentParameters.phase0);
+
+    this.updateState('spatial_clustering', 65, 'Phase 1: Spatial Clustering');
+    const regions = this.detectMenuRegions(pageData, this.currentParameters.phase1);
+
+    this.updateState('region_processing', 75, 'Phase 2: Region Processing & Validation');
+    const validatedRegions = await this.processAndValidateRegions(regions, pdf, this.currentParameters.phase2);
+
+    this.updateState('menu_assembly', 85, 'Phase 3: Menu Item Assembly & Validation');
+    const menuItems = await this.assembleAndValidateMenuItems(validatedRegions, this.currentParameters.phase3);
+
+    this.updateState('finalization', 95, 'Finalizing extraction');
+    return this.deduplicateItems(menuItems);
+  }
+
+  // Phase 0: Heuristic Analysis Engine
+  private performHeuristicAnalysis(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], params: any): void {
+    this.log('Starting heuristic analysis', 'info', 'heuristic_analysis');
+    
+    const allTextItems = pageData.flatMap(page => page.textItems);
+    
+    // Number classification
+    this.numberClassifications = this.classifyNumbers(allTextItems, params);
+    
+    // Typography fingerprinting
+    this.buildTypographyFingerprints(pageData, params);
+    
+    // Pattern extraction
+    this.extractStructuralPatterns(pageData, params);
+    
+    this.log(`Classified ${this.numberClassifications.length} numbers, identified ${this.typographyProfiles.size} typography profiles`, 'info', 'heuristic_analysis');
+  }
+
+  private classifyNumbers(textItems: TextItem[], params: any): NumberClassification[] {
+    const classifications: NumberClassification[] = [];
+    
+    textItems.forEach(item => {
+      const numbers = this.extractNumbers(item.text);
+      numbers.forEach(value => {
+        const classification = this.classifyNumber(value, item.text, item, params);
+        if (classification.confidence >= params.numberClassificationConfidence) {
+          classifications.push(classification);
+        }
+      });
+    });
+    
+    return classifications;
+  }
+
+  private extractNumbers(text: string): number[] {
+    const patterns = [
+      /\$(\d+\.?\d*)/g,           // Prices
+      /(\d+\.?\d*)\s*calories?/gi, // Calories
+      /(\d+\.?\d*)\s*(oz|lb|kg|g|ml|l)/gi, // Measurements
+      /(\d+)/g                     // General numbers
     ];
     
-    menuPatterns.forEach(pattern => {
-      const matches = texts.filter(text => pattern.test(text));
-      if (matches.length > texts.length * 0.3) { // 30% threshold
-        patterns.push(pattern.source);
+    const numbers: number[] = [];
+    patterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const value = parseFloat(match[1] || match[0]);
+        if (!isNaN(value)) {
+          numbers.push(value);
+        }
       }
     });
     
-    return patterns;
+    return [...new Set(numbers)]; // Remove duplicates
   }
 
-  /**
-   * Extract structural patterns from document analysis
-   */
-  private extractStructuralPatterns(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): void {
-    // This is a simplified implementation - would expand based on successful triple identification
-    // For now, we'll focus on the enhanced region-based extraction
-    this.log('Structural pattern extraction deferred to region analysis phase');
+  private classifyNumber(value: number, text: string, item: TextItem, params: any): NumberClassification {
+    let type: NumberClassification['type'] = 'unknown';
+    let confidence = 0;
+    let reasoning = '';
+
+    // Price classification
+    if (text.includes('$') && value >= 1 && value <= 100) {
+      type = 'price';
+      confidence = 0.9;
+      reasoning = 'Contains dollar sign and reasonable price range';
+    }
+    // Calorie classification
+    else if (/calories?/i.test(text) && value >= 50 && value <= 2000) {
+      type = 'calorie';
+      confidence = 0.85;
+      reasoning = 'Contains calorie keyword with reasonable range';
+    }
+    // Measurement classification
+    else if (/(oz|lb|kg|g|ml|l)/i.test(text)) {
+      type = 'measurement';
+      confidence = 0.8;
+      reasoning = 'Contains measurement unit';
+    }
+    // Count classification
+    else if (value <= 20 && Number.isInteger(value)) {
+      type = 'count';
+      confidence = 0.6;
+      reasoning = 'Small integer, likely a count';
+    }
+    // Item number classification
+    else if (item.x < 50 && Number.isInteger(value)) {
+      type = 'item_number';
+      confidence = 0.7;
+      reasoning = 'Integer at left margin, likely item number';
+    }
+
+    return { value, type, confidence, reasoning };
   }
 
-  /**
-   * Enhanced menu item extraction with heuristic validation
-   */
-  private async extractMenuItemsWithHeuristics(regions: MenuRegion[], fallbackText: string, pdf: any): Promise<MenuItem[]> {
-    const menuItems: MenuItem[] = [];
+  private buildTypographyFingerprints(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], params: any): void {
+    const fontGroups = new Map<string, TextItem[]>();
     
-    for (const region of regions) {
-      try {
-        const item = await this.parseMenuItemFromRegionWithHeuristics(region, pdf);
-        if (item) {
-          menuItems.push(item);
+    // Group by font characteristics
+    pageData.forEach(page => {
+      page.textItems.forEach(item => {
+        const key = `${item.fontName}_${item.fontSize}_${item.fontWeight}`;
+        if (!fontGroups.has(key)) {
+          fontGroups.set(key, []);
         }
-      } catch (error) {
-        this.log(`Error processing region: ${error}`);
-        // Try fallback parsing without heuristics
-        const fallbackItem = await this.parseMenuItemFromRegionWithImage(region, pdf);
-        if (fallbackItem) {
-          menuItems.push(fallbackItem);
-        }
-      }
-    }
-    
-    // Apply document-wide validation
-    const validatedItems = this.validateMenuItemsWithHeuristics(menuItems);
-    
-    // Fallback to traditional parsing if heuristic parsing yields too few results
-    if (validatedItems.length < 3) {
-      this.log('Heuristic parsing yielded few results, applying fallback parsing...');
-      const fallbackItems = this.extractMenuItemsFromRegions(regions, fallbackText);
-      return this.deduplicateItems([...validatedItems, ...fallbackItems]);
-    }
-    
-    return validatedItems;
-  }
-
-  /**
-   * Parse menu item from region using heuristic validation
-   */
-  private async parseMenuItemFromRegionWithHeuristics(region: MenuRegion, pdf: any): Promise<MenuItem | null> {
-    // Start with basic region parsing
-    const baseItem = await this.parseMenuItemFromRegionWithImage(region, pdf);
-    if (!baseItem) return null;
-    
-    // Apply heuristic validation
-    const validationResult = this.validateMenuItemWithHeuristics(baseItem, region);
-    
-    if (validationResult.isValid) {
-      return {
-        ...baseItem,
-        confidence: validationResult.confidence
-      };
-    }
-    
-    return null;
-  }
-
-  /**
-   * Validate menu item using heuristic rules
-   */
-  private validateMenuItemWithHeuristics(item: MenuItem, region: MenuRegion): { isValid: boolean; confidence: number } {
-    let confidence = 0.5; // Base confidence
-    let validationScore = 0;
-    const checks = [];
-    
-    // Name length validation
-    if (item.name.length <= 50 && item.name.length >= 2) {
-      validationScore += 0.2;
-      checks.push('Name length appropriate');
-    }
-    
-    // Description length validation
-    if (!item.description || item.description.length >= item.name.length) {
-      validationScore += 0.2;
-      checks.push('Description length valid');
-    }
-    
-    // Price validation using number classification
-    const priceClassification = this.numberClassifications.find(
-      nc => nc.value === item.price && nc.type === 'price'
-    );
-    if (priceClassification && priceClassification.confidence > 0.7) {
-      validationScore += 0.3;
-      checks.push('Price classification confident');
-    }
-    
-    // Typography consistency validation
-    const regionTexts = region.items.map(i => i.text);
-    const hasTypographyConsistency = this.checkTypographyConsistency(regionTexts);
-    if (hasTypographyConsistency) {
-      validationScore += 0.2;
-      checks.push('Typography consistent');
-    }
-    
-    // Economic reasonableness
-    if (item.price > 0.5 && item.price < 200) {
-      validationScore += 0.1;
-      checks.push('Price economically reasonable');
-    }
-    
-    confidence = Math.min(validationScore, 1.0);
-    
-    return {
-      isValid: confidence > 0.6,
-      confidence
-    };
-  }
-
-  /**
-   * Check typography consistency within a region
-   */
-  private checkTypographyConsistency(texts: string[]): boolean {
-    // Simplified check - would expand with more sophisticated analysis
-    return texts.length >= 2 && texts.length <= 6; // Reasonable text count for menu item
-  }
-
-  /**
-   * Validate entire menu items list using document-wide heuristics
-   */
-  private validateMenuItemsWithHeuristics(items: MenuItem[]): MenuItem[] {
-    // Name uniqueness validation
-    const uniqueNames = new Set();
-    const validatedItems = items.filter(item => {
-      const nameKey = item.name.toLowerCase().trim();
-      if (uniqueNames.has(nameKey)) {
-        return false; // Duplicate name
-      }
-      uniqueNames.add(nameKey);
-      return true;
+        fontGroups.get(key)!.push(item);
+      });
     });
+
+    // Build fingerprints for each group
+    fontGroups.forEach((items, key) => {
+      if (items.length >= 3) { // Minimum sample size
+        const texts = items.map(item => item.text);
+        const avgLength = texts.reduce((sum, text) => sum + text.length, 0) / texts.length;
+        const patterns = this.extractCommonPatterns(texts);
+        
+        const fingerprint: TypographyFingerprint = {
+          fontFamily: items[0].fontName || 'unknown',
+          fontSize: items[0].fontSize || 12,
+          fontWeight: items[0].fontWeight || 'normal',
+          avgLength,
+          commonPatterns: patterns,
+          confidence: Math.min(0.95, items.length / 10) // More samples = higher confidence
+        };
+        
+        this.typographyProfiles.set(key, fingerprint);
+      }
+    });
+  }
+
+  private extractCommonPatterns(texts: string[]): string[] {
+    const patterns: Map<string, number> = new Map();
     
-    this.log(`Uniqueness validation: ${items.length} → ${validatedItems.length} items`);
-    
-    // Price distribution validation
-    const prices = validatedItems.map(item => item.price).filter(p => p > 0);
-    if (prices.length > 0) {
-      const avgPrice = prices.reduce((sum, p) => sum + p, 0) / prices.length;
-      const filteredItems = validatedItems.filter(item => {
-        if (item.price === 0) return true; // Keep items without prices
-        return item.price < avgPrice * 3; // Remove outliers
+    texts.forEach(text => {
+      // Extract word patterns
+      const words = text.toLowerCase().split(/\s+/);
+      words.forEach(word => {
+        if (word.length > 2) {
+          patterns.set(word, (patterns.get(word) || 0) + 1);
+        }
       });
       
-      this.log(`Price validation: ${validatedItems.length} → ${filteredItems.length} items`);
-      return filteredItems;
-    }
+      // Extract character patterns
+      if (/^\d+\.?\d*$/.test(text)) patterns.set('NUMBER_PATTERN', (patterns.get('NUMBER_PATTERN') || 0) + 1);
+      if (/^\$/.test(text)) patterns.set('PRICE_PATTERN', (patterns.get('PRICE_PATTERN') || 0) + 1);
+      if (text.length > 20) patterns.set('LONG_TEXT', (patterns.get('LONG_TEXT') || 0) + 1);
+    });
     
-    return validatedItems;
+    return Array.from(patterns.entries())
+      .filter(([_, count]) => count >= Math.max(2, texts.length * 0.3))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([pattern, _]) => pattern);
   }
 
-  /**
-   * Phase 1: Spatial Clustering Algorithm
-   * Groups text elements into coherent rectangular regions based on proximity
-   */
-  private detectMenuRegions(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): MenuRegion[] {
-    this.log('Applying spatial clustering algorithm...');
+  private extractStructuralPatterns(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], params: any): void {
+    // This is a simplified implementation - the full version would analyze spatial relationships
+    // between different typography profiles to identify name/description/price patterns
+    this.structuralPatterns = [];
+    
+    this.log('Structural pattern extraction completed', 'debug', 'heuristic_analysis');
+  }
+
+  // Phase 1: Spatial Clustering Algorithm
+  private detectMenuRegions(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], params: any): MenuRegion[] {
+    this.log('Starting spatial clustering', 'info', 'spatial_clustering');
+    
     const allRegions: MenuRegion[] = [];
     
-    for (const page of pageData) {
-      this.log(`Processing page ${page.pageNum} with ${page.textItems.length} text items`);
-      
-      // Filter out empty or whitespace-only items
-      const validItems = page.textItems.filter(item => item.text.trim().length > 0);
-      
-      // Sort by Y coordinate (top to bottom)
-      const sortedItems = validItems.sort((a, b) => a.y - b.y);
-      
-      // Group into horizontal bands
-      const horizontalBands = this.groupIntoHorizontalBands(sortedItems);
-      this.log(`Found ${horizontalBands.length} horizontal bands on page ${page.pageNum}`);
-      
-      // Cluster each band into regions
-      for (const band of horizontalBands) {
-        const regions = this.clusterBandIntoRegions(band, page.pageNum, page.pageHeight);
-        allRegions.push(...regions);
-      }
-    }
+    pageData.forEach(page => {
+      const regions = this.clusterPageIntoRegions(page.textItems, page.pageNum, page.pageHeight, params);
+      allRegions.push(...regions);
+    });
+
+    const validatedRegions = this.filterAndValidateRegions(allRegions, params);
+    this.log(`Detected ${validatedRegions.length} menu regions`, 'info', 'spatial_clustering');
     
-    this.log(`Total regions detected: ${allRegions.length}`);
-    
-    // Filter and validate regions
-    const validRegions = this.filterAndValidateRegions(allRegions);
-    this.log(`Valid regions after filtering: ${validRegions.length}`);
-    
-    return validRegions;
+    return validatedRegions;
   }
 
-  /**
-   * Groups text items into horizontal bands based on Y-coordinate proximity
-   */
-  private groupIntoHorizontalBands(sortedItems: TextItem[]): TextItem[][] {
+  private clusterPageIntoRegions(textItems: TextItem[], pageNum: number, pageHeight: number, params: any): MenuRegion[] {
+    if (textItems.length === 0) return [];
+    
+    // Sort by Y coordinate for horizontal band formation
+    const sortedItems = [...textItems].sort((a, b) => a.y - b.y);
+    
+    // Group into horizontal bands
+    const bands = this.groupIntoHorizontalBands(sortedItems, params.yProximityThreshold);
+    
+    // Cluster each band into regions
+    const regions: MenuRegion[] = [];
+    bands.forEach(band => {
+      const bandRegions = this.clusterBandIntoRegions(band, pageNum, pageHeight, params);
+      regions.push(...bandRegions);
+    });
+    
+    return regions;
+  }
+
+  private groupIntoHorizontalBands(sortedItems: TextItem[], yThreshold: number): TextItem[][] {
     const bands: TextItem[][] = [];
     let currentBand: TextItem[] = [];
     
-    for (let i = 0; i < sortedItems.length; i++) {
-      const item = sortedItems[i];
-      
+    sortedItems.forEach(item => {
       if (currentBand.length === 0) {
-        currentBand = [item];
+        currentBand.push(item);
       } else {
         const lastItem = currentBand[currentBand.length - 1];
-        const yDistance = Math.abs(item.y - lastItem.y);
+        const emDistance = Math.abs(item.y - lastItem.y) / (item.fontSize || 12);
         
-        // If items are close vertically (within 20px), group them
-        if (yDistance <= 20) {
+        if (emDistance <= yThreshold) {
           currentBand.push(item);
         } else {
-          // Start new band
           if (currentBand.length > 0) {
             bands.push(currentBand);
           }
           currentBand = [item];
         }
       }
-    }
+    });
     
-    // Add the last band
     if (currentBand.length > 0) {
       bands.push(currentBand);
     }
@@ -580,55 +563,48 @@ export class MenuPDFParser {
     return bands;
   }
 
-  /**
-   * Clusters text items within a horizontal band into regions based on X-coordinate proximity
-   */
-  private clusterBandIntoRegions(band: TextItem[], pageNum: number, pageHeight: number): MenuRegion[] {
-    if (band.length < 2) return [];
+  private clusterBandIntoRegions(band: TextItem[], pageNum: number, pageHeight: number, params: any): MenuRegion[] {
+    if (band.length === 0) return [];
     
-    // Sort band by X coordinate (left to right)
-    const sortedBand = band.sort((a, b) => a.x - b.x);
+    // Sort band by X coordinate
+    const sortedBand = [...band].sort((a, b) => a.x - b.x);
     
     const regions: MenuRegion[] = [];
     let currentRegion: TextItem[] = [];
     
-    for (let i = 0; i < sortedBand.length; i++) {
-      const item = sortedBand[i];
-      
+    sortedBand.forEach(item => {
       if (currentRegion.length === 0) {
-        currentRegion = [item];
+        currentRegion.push(item);
       } else {
         const lastItem = currentRegion[currentRegion.length - 1];
-        const xDistance = item.x - (lastItem.x + lastItem.width);
+        const emDistance = Math.abs(item.x - (lastItem.x + lastItem.width)) / (item.fontSize || 12);
         
-        // If items are close horizontally (within 100px), group them
-        if (xDistance <= 100) {
+        if (emDistance <= params.xDistanceThreshold) {
           currentRegion.push(item);
         } else {
-          // Create region from current group
-          if (currentRegion.length >= 2) {
+          if (currentRegion.length >= 2) { // Minimum items for a region
             const region = this.createRegionFromItems(currentRegion, pageNum, pageHeight);
-            regions.push(region);
+            if (region.confidence >= params.minimumConfidenceThreshold) {
+              regions.push(region);
+            }
           }
           currentRegion = [item];
         }
       }
-    }
+    });
     
-    // Add the last region
+    // Process final region
     if (currentRegion.length >= 2) {
       const region = this.createRegionFromItems(currentRegion, pageNum, pageHeight);
-      regions.push(region);
+      if (region.confidence >= params.minimumConfidenceThreshold) {
+        regions.push(region);
+      }
     }
     
     return regions;
   }
 
-  /**
-   * Creates a MenuRegion from a collection of text items
-   */
   private createRegionFromItems(items: TextItem[], pageNum: number, pageHeight: number): MenuRegion {
-    // Calculate bounding box
     const minX = Math.min(...items.map(item => item.x));
     const maxX = Math.max(...items.map(item => item.x + item.width));
     const minY = Math.min(...items.map(item => item.y));
@@ -641,7 +617,6 @@ export class MenuPDFParser {
       height: maxY - minY
     };
     
-    // Calculate confidence score
     const confidence = this.calculateRegionConfidence(items, boundingBox);
     
     return {
@@ -653,269 +628,284 @@ export class MenuPDFParser {
     };
   }
 
-  /**
-   * Calculates confidence score for a region based on menu item characteristics
-   */
   private calculateRegionConfidence(items: TextItem[], boundingBox: any): number {
-    let score = 0.5; // Base score
+    let score = 0;
     
-    // Text length variety (names shorter, descriptions longer)
+    // Text length variety (names short, descriptions long)
     const lengths = items.map(item => item.text.length);
-    const hasVariety = Math.max(...lengths) > Math.min(...lengths) * 1.5;
-    if (hasVariety) score += 0.2;
+    const lengthVariety = Math.max(...lengths) - Math.min(...lengths);
+    score += Math.min(0.3, lengthVariety / 50);
     
-    // Price pattern detection
+    // Price pattern presence
     const hasPricePattern = items.some(item => /\$\d+\.?\d*/.test(item.text));
-    if (hasPricePattern) score += 0.3;
+    if (hasPricePattern) score += 0.4;
     
-    // Reasonable item count (2-5 elements typical for menu item)
-    if (items.length >= 2 && items.length <= 5) score += 0.2;
+    // Item count (3-6 items typical for menu item)
+    const itemCount = items.length;
+    if (itemCount >= 3 && itemCount <= 6) {
+      score += 0.2;
+    }
     
-    // Typography consistency using heuristics
-    const fontNames = items.map(item => item.fontName).filter(Boolean);
-    const uniqueFonts = new Set(fontNames).size;
-    if (uniqueFonts <= 3) score += 0.1; // Not too many different fonts
+    // Typography consistency
+    const fontNames = new Set(items.map(item => item.fontName));
+    if (fontNames.size <= 2) score += 0.1;
     
-    return Math.min(score, 1.0);
+    return Math.min(1.0, score);
   }
 
-  /**
-   * Filters regions based on confidence and characteristics
-   */
-  private filterAndValidateRegions(regions: MenuRegion[]): MenuRegion[] {
+  // Phase 2: Region Processing & Validation
+  private filterAndValidateRegions(regions: MenuRegion[], params: any): MenuRegion[] {
     return regions.filter(region => {
-      // Minimum confidence threshold
-      if (region.confidence < 0.6) return false;
+      // Size constraints
+      const widthEm = region.boundingBox.width / 12; // Approximate em conversion
+      const heightEm = region.boundingBox.height / 12;
       
-      // Reasonable size constraints
-      if (region.boundingBox.width < 50 || region.boundingBox.height < 10) return false;
+      if (widthEm < params.dimensionalConstraints?.minWidthEm || 
+          heightEm < params.dimensionalConstraints?.minHeightEm) {
+        return false;
+      }
       
-      // Must have at least 2 text items
-      if (region.items.length < 2) return false;
-      
-      // Should have some text content
-      const totalText = region.items.map(item => item.text).join('');
-      if (totalText.trim().length < 5) return false;
-      
-      return true;
+      // Confidence threshold
+      return region.confidence >= (params.confidenceFilteringThreshold || 0.5);
     });
   }
 
-  /**
-   * Parse menu item from region with image extraction
-   */
-  private async parseMenuItemFromRegionWithImage(region: MenuRegion, pdf: any): Promise<MenuItem | null> {
-    try {
-      // Extract text elements from region
-      const texts = region.items.map(item => item.text.trim()).filter(text => text.length > 0);
-      
-      if (texts.length < 2) return null;
-      
-      // Attempt to identify name, description, and price using heuristics
-      let name = '';
-      let description = '';
-      let price = 0;
-      
-      // Find price first (most reliable pattern)
-      const priceRegex = /\$(\d+\.?\d*)/;
-      for (const text of texts) {
-        const priceMatch = text.match(priceRegex);
-        if (priceMatch) {
-          price = parseFloat(priceMatch[1]);
-          break;
-        }
-      }
-      
-      // Remove price text from consideration for name/description
-      const nonPriceTexts = texts.filter(text => !priceRegex.test(text));
-      
-      if (nonPriceTexts.length >= 1) {
-        // First non-price text is likely the name
-        name = nonPriceTexts[0];
+  private async processAndValidateRegions(regions: MenuRegion[], pdf: any, params: any): Promise<MenuRegion[]> {
+    const processedRegions: MenuRegion[] = [];
+    
+    for (const region of regions) {
+      try {
+        // Extract region image for visual validation
+        const regionImage = await this.extractRegionImage(region, pdf);
         
-        // Remaining texts form description
-        if (nonPriceTexts.length > 1) {
-          description = nonPriceTexts.slice(1).join(' ');
+        // Validate using heuristics
+        const isValid = this.validateRegionWithHeuristics(region, params);
+        
+        if (isValid) {
+          // Create enhanced region with image metadata
+          const enhancedRegion = { 
+            ...region,
+            regionImage
+          };
+          processedRegions.push(enhancedRegion);
         }
-      } else {
-        // Fallback: use first text as name
-        name = texts[0];
+      } catch (error) {
+        this.log(`Failed to process region: ${error}`, 'warn', 'region_processing');
       }
-      
-      // Extract region image
-      const regionImage = await this.extractRegionImage(region, pdf);
-      
-      return {
-        id: `item-${region.pageNumber}-${Math.floor(region.boundingBox.x)}-${Math.floor(region.boundingBox.y)}`,
-        name: this.cleanItemName(name),
-        price,
-        description: description || undefined,
-        category: this.categorizeItem(name, description),
-        servingSize: this.estimateServingSize(name, description),
-        regionImage,
-        confidence: region.confidence
-      };
-    } catch (error) {
-      this.log(`Error parsing region: ${error}`);
-      return null;
     }
+    
+    return processedRegions;
   }
 
-  /**
-   * Extracts a rectangular region from PDF as base64 image
-   */
   private async extractRegionImage(region: MenuRegion, pdf: any): Promise<string | undefined> {
     try {
       const page = await pdf.getPage(region.pageNumber);
-      const viewport = page.getViewport({ scale: 2.0 }); // 2x scale for better quality
+      const viewport = page.getViewport({ scale: 2 }); // Higher resolution
       
-      // Create canvas for rendering
       const canvas = document.createElement('canvas');
       const context = canvas.getContext('2d')!;
-      
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       
-      // Render the page
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise;
+      await page.render({ canvasContext: context, viewport }).promise;
       
-      // Convert region coordinates to canvas coordinates
-      const scale = 2.0;
-      const padding = 5; // Add small padding around region
-      
-      const x = Math.max(0, (region.boundingBox.x - padding) * scale);
-      const y = Math.max(0, (viewport.height - region.boundingBox.y - region.boundingBox.height - padding) * scale);
-      const width = Math.min(canvas.width - x, (region.boundingBox.width + 2 * padding) * scale);
-      const height = Math.min(canvas.height - y, (region.boundingBox.height + 2 * padding) * scale);
-      
-      // Extract region as image data
-      const imageData = context.getImageData(x, y, width, height);
-      
-      // Create a new canvas for the cropped region
+      // Extract region with padding
+      const padding = 10;
       const regionCanvas = document.createElement('canvas');
       const regionContext = regionCanvas.getContext('2d')!;
-      regionCanvas.width = width;
-      regionCanvas.height = height;
       
-      regionContext.putImageData(imageData, 0, 0);
+      const scaledBox = {
+        x: region.boundingBox.x * 2 - padding,
+        y: region.boundingBox.y * 2 - padding,
+        width: region.boundingBox.width * 2 + padding * 2,
+        height: region.boundingBox.height * 2 + padding * 2
+      };
       
-      // Convert to base64
+      regionCanvas.width = Math.min(200, scaledBox.width); // Limit size
+      regionCanvas.height = Math.min(100, scaledBox.height);
+      
+      regionContext.drawImage(
+        canvas,
+        scaledBox.x, scaledBox.y, scaledBox.width, scaledBox.height,
+        0, 0, regionCanvas.width, regionCanvas.height
+      );
+      
       return regionCanvas.toDataURL('image/png');
     } catch (error) {
-      this.log(`Error extracting region image: ${error}`);
+      this.log(`Failed to extract region image: ${error}`, 'warn', 'region_processing');
       return undefined;
     }
   }
 
-  /**
-   * Fallback parsing for regions without enhanced heuristics
-   */
-  private extractMenuItemsFromRegions(regions: MenuRegion[], fallbackText: string): MenuItem[] {
-    const items: MenuItem[] = [];
+  private validateRegionWithHeuristics(region: MenuRegion, params: any): boolean {
+    const texts = region.items.map(item => item.text);
+    const combinedText = texts.join(' ');
     
-    for (const region of regions) {
-      const item = this.parseMenuItemFromRegion(region);
-      if (item) {
-        items.push(item);
-      }
-    }
+    // Name validation (should have reasonable length, title case)
+    const hasName = texts.some(text => text.length >= 3 && text.length <= 30);
     
-    // If we still have few items, try basic text parsing
-    if (items.length < 3) {
-      const textItems = this.parseMenuItems(fallbackText, []);
-      items.push(...textItems);
-    }
+    // Description validation (longer text with ingredient keywords)
+    const hasDescription = texts.some(text => 
+      text.length > 10 && /\b(with|and|or|served|topped|seasoned)\b/i.test(text)
+    );
     
-    return this.deduplicateItems(items);
+    // Price validation
+    const hasPrice = texts.some(text => /\$\d+\.?\d*/.test(text));
+    
+    const weights = params.heuristicValidationWeights || {
+      nameLength: 0.25,
+      descriptionComplexity: 0.25,
+      priceValidation: 0.5
+    };
+    
+    const score = (hasName ? weights.nameLength : 0) +
+                  (hasDescription ? weights.descriptionComplexity : 0) +
+                  (hasPrice ? weights.priceValidation : 0);
+    
+    return score >= (params.extractionQualityThreshold || 0.7);
   }
 
-  /**
-   * Parse menu item from region (fallback without image)
-   */
-  private parseMenuItemFromRegion(region: MenuRegion): MenuItem | null {
-    const texts = region.items.map(item => item.text.trim()).filter(text => text.length > 0);
+  // Phase 3: Menu Item Assembly & Validation
+  private assembleMenuItems(regions: MenuRegion[], params: any): MenuItem[] {
+    const menuItems: MenuItem[] = [];
     
-    if (texts.length < 2) return null;
+    regions.forEach((region, index) => {
+      const item = this.parseMenuItemFromRegion(region, index);
+      if (item) {
+        menuItems.push(item);
+      }
+    });
     
-    let name = '';
-    let description = '';
-    let price = 0;
+    return menuItems;
+  }
+
+  private async assembleAndValidateMenuItems(regions: MenuRegion[], params: any): Promise<MenuItem[]> {
+    let menuItems = this.assembleMenuItems(regions, params);
+    
+    // Bootstrap assessment
+    if (menuItems.length < 5 || this.calculateAverageConfidence(menuItems) < params.bootstrapQualityThreshold) {
+      this.log('Running bootstrap fallback processing', 'info', 'menu_assembly');
+      const fallbackItems = await this.runBootstrapFallback(regions);
+      menuItems = [...menuItems, ...fallbackItems];
+    }
+    
+    // Document-wide validation
+    menuItems = this.validateMenuItemsWithHeuristics(menuItems, params);
+    
+    return menuItems;
+  }
+
+  private calculateAverageConfidence(items: MenuItem[]): number {
+    if (items.length === 0) return 0;
+    return items.reduce((sum, item) => sum + (item.confidence || 0), 0) / items.length;
+  }
+
+  private async runBootstrapFallback(regions: MenuRegion[]): Promise<MenuItem[]> {
+    // Simplified fallback - in practice this would implement full text parsing
+    const fallbackItems: MenuItem[] = [];
+    
+    regions.forEach((region, index) => {
+      const texts = region.items.map(item => item.text);
+      const combinedText = texts.join(' ');
+      
+      // Simple pattern matching for fallback
+      const priceMatch = combinedText.match(/\$(\d+\.?\d*)/);
+      if (priceMatch) {
+        const nameText = texts.find(text => text.length > 3 && !text.includes('$')) || 'Unknown Item';
+        
+        fallbackItems.push({
+          id: `fallback-${index}`,
+          name: nameText.trim(),
+          price: parseFloat(priceMatch[1]),
+          description: texts.find(text => text.length > 20) || '',
+          category: 'Other',
+          confidence: 0.4,
+          extractionMetadata: {
+            sourceRegion: region,
+            processingPhase: 'bootstrap_fallback',
+            optimizationParameters: this.currentParameters || {}
+          }
+        });
+      }
+    });
+    
+    return fallbackItems;
+  }
+
+  private parseMenuItemFromRegion(region: MenuRegion, index: number): MenuItem | null {
+    const texts = region.items.map(item => item.text);
     
     // Find price
-    const priceRegex = /\$(\d+\.?\d*)/;
+    let price = 0;
+    let priceText = '';
     for (const text of texts) {
-      const priceMatch = text.match(priceRegex);
+      const priceMatch = text.match(/\$(\d+\.?\d*)/);
       if (priceMatch) {
         price = parseFloat(priceMatch[1]);
+        priceText = text;
         break;
       }
     }
     
-    // Remove price text
-    const nonPriceTexts = texts.filter(text => !priceRegex.test(text));
+    if (price === 0) return null;
     
-    if (nonPriceTexts.length >= 1) {
-      name = nonPriceTexts[0];
-      if (nonPriceTexts.length > 1) {
-        description = nonPriceTexts.slice(1).join(' ');
-      }
-    } else {
-      name = texts[0];
-    }
+    // Find name (shortest non-price text)
+    const nonPriceTexts = texts.filter(text => text !== priceText && text.length > 2);
+    if (nonPriceTexts.length === 0) return null;
+    
+    const name = nonPriceTexts.reduce((shortest, text) => 
+      text.length < shortest.length ? text : shortest
+    );
+    
+    // Find description (longest remaining text)
+    const description = nonPriceTexts
+      .filter(text => text !== name)
+      .reduce((longest, text) => 
+        text.length > longest.length ? text : longest, ''
+      );
+    
+    const category = this.categorizeItem(name, description);
     
     return {
-      id: `item-${region.pageNumber}-${Math.floor(region.boundingBox.x)}-${Math.floor(region.boundingBox.y)}`,
+      id: `item-${index}`,
       name: this.cleanItemName(name),
       price,
       description: description || undefined,
-      category: this.categorizeItem(name, description),
+      category,
       servingSize: this.estimateServingSize(name, description),
-      confidence: region.confidence
+      confidence: region.confidence,
+      regionImage: region.regionImage,
+      extractionMetadata: {
+        sourceRegion: region,
+        processingPhase: 'region_parsing',
+        optimizationParameters: this.currentParameters || {}
+      }
     };
   }
 
-  private parseMenuItems(text: string, _textItems: TextItem[]): MenuItem[] {
-    const items: MenuItem[] = [];
-    const lines = text.split('\n').filter(line => line.trim().length > 0);
+  private validateMenuItemsWithHeuristics(items: MenuItem[], params: any): MenuItem[] {
+    // Remove duplicates
+    const uniqueItems = this.deduplicateItems(items);
     
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      
-      // Look for price patterns
-      const priceMatch = line.match(/\$(\d+\.?\d*)/);
-      if (priceMatch) {
-        const price = parseFloat(priceMatch[1]);
-        const nameText = line.replace(/\$\d+\.?\d*/, '').trim();
-        
-        if (nameText.length > 0) {
-          const item: MenuItem = {
-            id: `fallback-${i}`,
-            name: this.cleanItemName(nameText),
-            price,
-            category: this.categorizeItem(nameText, ''),
-            servingSize: this.estimateServingSize(nameText, ''),
-            confidence: 0.5
-          };
-          
-          items.push(item);
-        }
-      }
-    }
-    
-    return items;
+    // Validate prices (economic clustering)
+    return uniqueItems.filter(item => {
+      if (item.price <= 0 || item.price > 200) return false;
+      if (item.name.length < 2 || item.name.length > 100) return false;
+      return true;
+    });
   }
 
   private categorizeItem(name: string, description: string): string {
     const text = (name + ' ' + description).toLowerCase();
     
-    if (text.match(/appetizer|starter|app\b|dip|wing|nachos|salad/)) return 'Appetizers';
-    if (text.match(/burger|sandwich|wrap|pizza|pasta|steak|chicken|fish|entree|main/)) return 'Main Courses';
-    if (text.match(/dessert|cake|pie|ice cream|sundae|cookie/)) return 'Desserts';
-    if (text.match(/drink|beverage|soda|beer|wine|cocktail|coffee|tea/)) return 'Beverages';
-    if (text.match(/side|fries|rice|vegetables|potato/)) return 'Sides';
+    if (/salad|green|lettuce|spinach/.test(text)) return 'Salads';
+    if (/soup|broth|bisque|chowder/.test(text)) return 'Soups';
+    if (/appetizer|starter|wing|nachos|dip/.test(text)) return 'Appetizers';
+    if (/burger|sandwich|wrap|panini/.test(text)) return 'Sandwiches';
+    if (/pizza|pasta|spaghetti|lasagna/.test(text)) return 'Italian';
+    if (/steak|chicken|fish|salmon|beef|pork/.test(text)) return 'Entrees';
+    if (/dessert|cake|pie|ice cream|chocolate/.test(text)) return 'Desserts';
+    if (/coffee|tea|soda|juice|beer|wine/.test(text)) return 'Beverages';
     
     return 'Other';
   }
@@ -923,32 +913,34 @@ export class MenuPDFParser {
   private estimateServingSize(name: string, description: string): number {
     const text = (name + ' ' + description).toLowerCase();
     
-    if (text.match(/appetizer|starter|side/)) return 2;
-    if (text.match(/salad|soup/)) return 1;
-    if (text.match(/pizza|large|family/)) return 4;
-    if (text.match(/sharing|platter/)) return 6;
+    if (/salad|soup|appetizer/.test(text)) return 1;
+    if (/burger|sandwich|entree|main/.test(text)) return 2;
+    if (/pizza|pasta|sharing|platter/.test(text)) return 4;
+    if (/dessert|side/.test(text)) return 1;
     
-    return 1; // Default individual serving
+    return 2; // Default serving size
   }
 
   private cleanItemName(name: string): string {
     return name
-      .replace(/\$\d+\.?\d*/, '') // Remove prices
-      .replace(/\s+/g, ' ') // Normalize whitespace
+      .replace(/^\d+\.?\s*/, '') // Remove leading numbers
+      .replace(/\s+/g, ' ')      // Normalize whitespace
       .trim()
-      .replace(/^[•\-\*]+\s*/, '') // Remove bullet points
-      .replace(/\s*[•\-\*]+$/, ''); // Remove trailing markers
+      .replace(/^[a-z]/, char => char.toUpperCase()); // Capitalize first letter
   }
 
   private deduplicateItems(items: MenuItem[]): MenuItem[] {
+    const unique: MenuItem[] = [];
     const seen = new Set<string>();
-    return items.filter(item => {
-      const key = item.name.toLowerCase().trim();
-      if (seen.has(key)) {
-        return false;
+    
+    items.forEach(item => {
+      const key = `${item.name.toLowerCase()}_${item.price}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(item);
       }
-      seen.add(key);
-      return true;
     });
+    
+    return unique;
   }
 }
