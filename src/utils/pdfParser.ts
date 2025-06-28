@@ -15,6 +15,36 @@ interface TextItem {
   height: number;
   fontSize?: number;
   fontName?: string;
+  fontWeight?: string;
+  fontStyle?: string;
+}
+
+interface TypographyFingerprint {
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: string;
+  avgLength: number;
+  commonPatterns: string[];
+  confidence: number;
+}
+
+interface NumberClassification {
+  value: number;
+  type: 'price' | 'count' | 'calorie' | 'measurement' | 'item_number' | 'unknown';
+  confidence: number;
+  reasoning: string;
+}
+
+interface StructuralPattern {
+  nameFingerprint: TypographyFingerprint;
+  descriptionFingerprint: TypographyFingerprint;
+  priceFingerprint: TypographyFingerprint;
+  spatialRelationships: {
+    nameToDescription: { dx: number; dy: number; tolerance: number };
+    descriptionToPrice: { dx: number; dy: number; tolerance: number };
+    nameToPrice: { dx: number; dy: number; tolerance: number };
+  };
+  confidence: number;
 }
 
 interface MenuRegion {
@@ -32,6 +62,9 @@ interface MenuRegion {
 
 export class MenuPDFParser {
   private logCallback?: (message: string) => void;
+  private documentPatterns: StructuralPattern[] = [];
+  private numberClassifications: NumberClassification[] = [];
+  private typographyProfiles: Map<string, TypographyFingerprint> = new Map();
 
   setLogCallback(callback: (message: string) => void) {
     this.logCallback = callback;
@@ -64,7 +97,7 @@ export class MenuPDFParser {
       let textItems: TextItem[] = [];
       const pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[] = [];
       
-      // Extract text from all pages
+      // Extract text from all pages with enhanced typography data
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         this.log(`Processing page ${pageNum}/${pdf.numPages}...`);
         
@@ -78,15 +111,17 @@ export class MenuPDFParser {
         const viewport = page.getViewport({ scale: 1.0 });
         const pageHeight = viewport.height;
         
-        // Preserve spatial information for better parsing
-        const pageItems = textContent.items.map((item: any) => ({
+        // Preserve spatial information for better parsing with enhanced typography data
+        const pageItems: TextItem[] = textContent.items.map((item: any) => ({
           text: item.str,
           x: item.transform[4],
           y: item.transform[5],
           width: item.width,
           height: item.height,
-          fontSize: item.height, // Approximate font size from height
-          fontName: item.fontName || 'unknown'
+          fontSize: item.height,
+          fontName: item.fontName || 'unknown',
+          fontWeight: this.extractFontWeight(item.fontName || ''),
+          fontStyle: this.extractFontStyle(item.fontName || '')
         }));
         
         // Store page data for region extraction
@@ -106,12 +141,16 @@ export class MenuPDFParser {
       this.log(`Text extraction complete. Total characters: ${allText.length}`);
       this.log(`Total text items collected: ${textItems.length}`);
       
+      // Phase 0: Heuristic Analysis - Number classification and typography fingerprinting
+      this.log('Phase 0: Performing heuristic analysis...');
+      this.performHeuristicAnalysis(pageData);
+      
       this.log('Starting topological region analysis...');
       const regions = this.detectMenuRegions(pageData);
       this.log(`Found ${regions.length} potential menu regions`);
       
-      this.log('Extracting menu items with PDF region images...');
-      const menuItems = await this.extractMenuItemsWithRegions(regions, allText, pdf);
+      this.log('Extracting menu items with heuristic validation...');
+      const menuItems = await this.extractMenuItemsWithHeuristics(regions, allText, pdf);
       this.log(`Menu parsing complete. Found ${menuItems.length} items`);
       
       return menuItems;
@@ -124,6 +163,350 @@ export class MenuPDFParser {
   }
 
   /**
+   * Extracts font weight from font name using heuristic patterns
+   */
+  private extractFontWeight(fontName: string): string {
+    const name = fontName.toLowerCase();
+    if (name.includes('bold') || name.includes('heavy') || name.includes('black')) return 'bold';
+    if (name.includes('light') || name.includes('thin')) return 'light';
+    if (name.includes('medium')) return 'medium';
+    return 'normal';
+  }
+
+  /**
+   * Extracts font style from font name using heuristic patterns
+   */
+  private extractFontStyle(fontName: string): string {
+    const name = fontName.toLowerCase();
+    if (name.includes('italic') || name.includes('oblique')) return 'italic';
+    return 'normal';
+  }
+
+  /**
+   * Phase 0: Heuristic Analysis - Number classification and typography fingerprinting
+   */
+  private performHeuristicAnalysis(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): void {
+    this.log('Performing number classification analysis...');
+    
+    // Collect all numbers from the document
+    const allNumbers: { value: number; text: string; item: TextItem }[] = [];
+    
+    for (const page of pageData) {
+      for (const item of page.textItems) {
+        const numbers = this.extractNumbers(item.text);
+        numbers.forEach(num => {
+          allNumbers.push({ value: num, text: item.text, item });
+        });
+      }
+    }
+    
+    this.log(`Found ${allNumbers.length} numeric values for classification`);
+    
+    // Classify each number using heuristic rules
+    this.numberClassifications = allNumbers.map(num => this.classifyNumber(num.value, num.text, num.item));
+    
+    // Build typography fingerprints
+    this.log('Building typography fingerprints...');
+    this.buildTypographyFingerprints(pageData);
+    
+    // Extract structural patterns from high-confidence regions
+    this.log('Extracting structural patterns...');
+    this.extractStructuralPatterns(pageData);
+  }
+
+  /**
+   * Extract numbers from text using regex patterns
+   */
+  private extractNumbers(text: string): number[] {
+    const numberMatches = text.match(/\d+\.?\d*/g);
+    if (!numberMatches) return [];
+    
+    return numberMatches.map(match => parseFloat(match)).filter(num => !isNaN(num));
+  }
+
+  /**
+   * Classify a number using heuristic rules from the engineering strategy
+   */
+  private classifyNumber(value: number, text: string, item: TextItem): NumberClassification {
+    // Price indicators
+    if (text.match(/^\$?\d+\.?\d{0,2}$/) && value > 0.5 && value < 200) {
+      return {
+        value,
+        type: 'price',
+        confidence: 0.9,
+        reasoning: 'Currency format with reasonable restaurant pricing range'
+      };
+    }
+    
+    // Calorie indicators
+    if (value >= 100 && value <= 2000 && (text.includes('cal') || text.includes('kcal'))) {
+      return {
+        value,
+        type: 'calorie',
+        confidence: 0.85,
+        reasoning: 'Large number with calorie suffix in typical range'
+      };
+    }
+    
+    // Measurement indicators
+    if (text.match(/\d+\s*(oz|lb|"|'|inch|foot|liter|ml)/i)) {
+      return {
+        value,
+        type: 'measurement',
+        confidence: 0.8,
+        reasoning: 'Number followed by measurement unit'
+      };
+    }
+    
+    // Piece count indicators
+    if (value <= 20 && Number.isInteger(value) && !text.includes('$')) {
+      return {
+        value,
+        type: 'count',
+        confidence: 0.6,
+        reasoning: 'Small integer without currency symbols'
+      };
+    }
+    
+    // Item number indicators
+    if (text.match(/^#?\d+$/) || text.match(/No\.\s*\d+/i)) {
+      return {
+        value,
+        type: 'item_number',
+        confidence: 0.7,
+        reasoning: 'Sequential number with prefix patterns'
+      };
+    }
+    
+    return {
+      value,
+      type: 'unknown',
+      confidence: 0.3,
+      reasoning: 'Does not match known heuristic patterns'
+    };
+  }
+
+  /**
+   * Build typography fingerprints for different element types
+   */
+  private buildTypographyFingerprints(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): void {
+    const typeGroups = new Map<string, TextItem[]>();
+    
+    // Group text items by typography characteristics
+    for (const page of pageData) {
+      for (const item of page.textItems) {
+        const key = `${item.fontName}-${item.fontSize}-${item.fontWeight}`;
+        if (!typeGroups.has(key)) {
+          typeGroups.set(key, []);
+        }
+        typeGroups.get(key)!.push(item);
+      }
+    }
+    
+    // Create fingerprints for each typography group
+    for (const [key, items] of typeGroups) {
+      if (items.length < 3) continue; // Skip groups with too few samples
+      
+      const avgLength = items.reduce((sum, item) => sum + item.text.length, 0) / items.length;
+      const commonPatterns = this.extractCommonPatterns(items.map(item => item.text));
+      
+      const fingerprint: TypographyFingerprint = {
+        fontFamily: items[0].fontName || 'unknown',
+        fontSize: items[0].fontSize || 12,
+        fontWeight: items[0].fontWeight || 'normal',
+        avgLength,
+        commonPatterns,
+        confidence: Math.min(items.length / 10, 1.0) // Higher confidence with more samples
+      };
+      
+      this.typographyProfiles.set(key, fingerprint);
+    }
+    
+    this.log(`Built ${this.typographyProfiles.size} typography fingerprints`);
+  }
+
+  /**
+   * Extract common patterns from text samples
+   */
+  private extractCommonPatterns(texts: string[]): string[] {
+    const patterns: string[] = [];
+    
+    // Check for common menu item patterns
+    const menuPatterns = [
+      /\b(served|with|topped|fresh|grilled|fried|baked)\b/i,
+      /\$\d+\.\d{2}/,
+      /\b\d+\s*(oz|lb)\b/i,
+      /\b(appetizer|entree|dessert|beverage)\b/i
+    ];
+    
+    menuPatterns.forEach(pattern => {
+      const matches = texts.filter(text => pattern.test(text));
+      if (matches.length > texts.length * 0.3) { // 30% threshold
+        patterns.push(pattern.source);
+      }
+    });
+    
+    return patterns;
+  }
+
+  /**
+   * Extract structural patterns from document analysis
+   */
+  private extractStructuralPatterns(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[]): void {
+    // This is a simplified implementation - would expand based on successful triple identification
+    // For now, we'll focus on the enhanced region-based extraction
+    this.log('Structural pattern extraction deferred to region analysis phase');
+  }
+
+  /**
+   * Enhanced menu item extraction with heuristic validation
+   */
+  private async extractMenuItemsWithHeuristics(regions: MenuRegion[], fallbackText: string, pdf: any): Promise<MenuItem[]> {
+    const menuItems: MenuItem[] = [];
+    
+    for (const region of regions) {
+      try {
+        const item = await this.parseMenuItemFromRegionWithHeuristics(region, pdf);
+        if (item) {
+          menuItems.push(item);
+        }
+      } catch (error) {
+        this.log(`Error processing region: ${error}`);
+        // Try fallback parsing without heuristics
+        const fallbackItem = await this.parseMenuItemFromRegionWithImage(region, pdf);
+        if (fallbackItem) {
+          menuItems.push(fallbackItem);
+        }
+      }
+    }
+    
+    // Apply document-wide validation
+    const validatedItems = this.validateMenuItemsWithHeuristics(menuItems);
+    
+    // Fallback to traditional parsing if heuristic parsing yields too few results
+    if (validatedItems.length < 3) {
+      this.log('Heuristic parsing yielded few results, applying fallback parsing...');
+      const fallbackItems = this.extractMenuItemsFromRegions(regions, fallbackText);
+      return this.deduplicateItems([...validatedItems, ...fallbackItems]);
+    }
+    
+    return validatedItems;
+  }
+
+  /**
+   * Parse menu item from region using heuristic validation
+   */
+  private async parseMenuItemFromRegionWithHeuristics(region: MenuRegion, pdf: any): Promise<MenuItem | null> {
+    // Start with basic region parsing
+    const baseItem = await this.parseMenuItemFromRegionWithImage(region, pdf);
+    if (!baseItem) return null;
+    
+    // Apply heuristic validation
+    const validationResult = this.validateMenuItemWithHeuristics(baseItem, region);
+    
+    if (validationResult.isValid) {
+      return {
+        ...baseItem,
+        confidence: validationResult.confidence
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * Validate menu item using heuristic rules
+   */
+  private validateMenuItemWithHeuristics(item: MenuItem, region: MenuRegion): { isValid: boolean; confidence: number } {
+    let confidence = 0.5; // Base confidence
+    let validationScore = 0;
+    const checks = [];
+    
+    // Name length validation
+    if (item.name.length <= 50 && item.name.length >= 2) {
+      validationScore += 0.2;
+      checks.push('Name length appropriate');
+    }
+    
+    // Description length validation
+    if (!item.description || item.description.length >= item.name.length) {
+      validationScore += 0.2;
+      checks.push('Description length valid');
+    }
+    
+    // Price validation using number classification
+    const priceClassification = this.numberClassifications.find(
+      nc => nc.value === item.price && nc.type === 'price'
+    );
+    if (priceClassification && priceClassification.confidence > 0.7) {
+      validationScore += 0.3;
+      checks.push('Price classification confident');
+    }
+    
+    // Typography consistency validation
+    const regionTexts = region.items.map(i => i.text);
+    const hasTypographyConsistency = this.checkTypographyConsistency(regionTexts);
+    if (hasTypographyConsistency) {
+      validationScore += 0.2;
+      checks.push('Typography consistent');
+    }
+    
+    // Economic reasonableness
+    if (item.price > 0.5 && item.price < 200) {
+      validationScore += 0.1;
+      checks.push('Price economically reasonable');
+    }
+    
+    confidence = Math.min(validationScore, 1.0);
+    
+    return {
+      isValid: confidence > 0.6,
+      confidence
+    };
+  }
+
+  /**
+   * Check typography consistency within a region
+   */
+  private checkTypographyConsistency(texts: string[]): boolean {
+    // Simplified check - would expand with more sophisticated analysis
+    return texts.length >= 2 && texts.length <= 6; // Reasonable text count for menu item
+  }
+
+  /**
+   * Validate entire menu items list using document-wide heuristics
+   */
+  private validateMenuItemsWithHeuristics(items: MenuItem[]): MenuItem[] {
+    // Name uniqueness validation
+    const uniqueNames = new Set();
+    const validatedItems = items.filter(item => {
+      const nameKey = item.name.toLowerCase().trim();
+      if (uniqueNames.has(nameKey)) {
+        return false; // Duplicate name
+      }
+      uniqueNames.add(nameKey);
+      return true;
+    });
+    
+    this.log(`Uniqueness validation: ${items.length} → ${validatedItems.length} items`);
+    
+    // Price distribution validation
+    const prices = validatedItems.map(item => item.price).filter(p => p > 0);
+    if (prices.length > 0) {
+      const avgPrice = prices.reduce((sum, p) => sum + p, 0) / prices.length;
+      const filteredItems = validatedItems.filter(item => {
+        if (item.price === 0) return true; // Keep items without prices
+        return item.price < avgPrice * 3; // Remove outliers
+      });
+      
+      this.log(`Price validation: ${validatedItems.length} → ${filteredItems.length} items`);
+      return filteredItems;
+    }
+    
+    return validatedItems;
+  }
+
+  /**
    * Phase 1: Spatial Clustering Algorithm
    * Groups text elements into coherent rectangular regions based on proximity
    */
@@ -132,35 +515,30 @@ export class MenuPDFParser {
     const allRegions: MenuRegion[] = [];
     
     for (const page of pageData) {
-      // Filter out very small text items (likely noise)
-      const validItems = page.textItems.filter(item => 
-        item.text.trim().length > 0 && 
-        item.width > 0 && 
-        item.height > 0
-      );
+      this.log(`Processing page ${page.pageNum} with ${page.textItems.length} text items`);
       
-      this.log(`Page ${page.pageNum}: Filtered ${validItems.length} valid text items from ${page.textItems.length} total`);
+      // Filter out empty or whitespace-only items
+      const validItems = page.textItems.filter(item => item.text.trim().length > 0);
       
-      // Phase 1: Sort by Y coordinate and group into horizontal bands
-      const sortedItems = [...validItems].sort((a, b) => b.y - a.y); // PDF coordinates are bottom-up
+      // Sort by Y coordinate (top to bottom)
+      const sortedItems = validItems.sort((a, b) => a.y - b.y);
+      
+      // Group into horizontal bands
       const horizontalBands = this.groupIntoHorizontalBands(sortedItems);
-      this.log(`Page ${page.pageNum}: Created ${horizontalBands.length} horizontal bands`);
+      this.log(`Found ${horizontalBands.length} horizontal bands on page ${page.pageNum}`);
       
-      // Phase 2: Within each band, cluster by X coordinate proximity
-      for (let bandIndex = 0; bandIndex < horizontalBands.length; bandIndex++) {
-        const band = horizontalBands[bandIndex];
-        const bandRegions = this.clusterBandIntoRegions(band, page.pageNum, page.pageHeight);
-        allRegions.push(...bandRegions);
-        
-        if (bandIndex % 10 === 0) {
-          this.log(`Page ${page.pageNum}: Processed band ${bandIndex}/${horizontalBands.length}, found ${bandRegions.length} regions`);
-        }
+      // Cluster each band into regions
+      for (const band of horizontalBands) {
+        const regions = this.clusterBandIntoRegions(band, page.pageNum, page.pageHeight);
+        allRegions.push(...regions);
       }
     }
     
-    // Phase 3: Filter and validate regions
+    this.log(`Total regions detected: ${allRegions.length}`);
+    
+    // Filter and validate regions
     const validRegions = this.filterAndValidateRegions(allRegions);
-    this.log(`Filtered to ${validRegions.length} valid menu regions across all pages`);
+    this.log(`Valid regions after filtering: ${validRegions.length}`);
     
     return validRegions;
   }
@@ -170,25 +548,33 @@ export class MenuPDFParser {
    */
   private groupIntoHorizontalBands(sortedItems: TextItem[]): TextItem[][] {
     const bands: TextItem[][] = [];
-    const VERTICAL_THRESHOLD = 5; // Pixels - items within this distance are in same band
+    let currentBand: TextItem[] = [];
     
-    for (const item of sortedItems) {
-      let addedToBand = false;
+    for (let i = 0; i < sortedItems.length; i++) {
+      const item = sortedItems[i];
       
-      // Try to add to existing band
-      for (const band of bands) {
-        const bandY = band[0].y;
-        if (Math.abs(item.y - bandY) <= VERTICAL_THRESHOLD) {
-          band.push(item);
-          addedToBand = true;
-          break;
+      if (currentBand.length === 0) {
+        currentBand = [item];
+      } else {
+        const lastItem = currentBand[currentBand.length - 1];
+        const yDistance = Math.abs(item.y - lastItem.y);
+        
+        // If items are close vertically (within 20px), group them
+        if (yDistance <= 20) {
+          currentBand.push(item);
+        } else {
+          // Start new band
+          if (currentBand.length > 0) {
+            bands.push(currentBand);
+          }
+          currentBand = [item];
         }
       }
-      
-      // Create new band if item doesn't fit existing ones
-      if (!addedToBand) {
-        bands.push([item]);
-      }
+    }
+    
+    // Add the last band
+    if (currentBand.length > 0) {
+      bands.push(currentBand);
     }
     
     return bands;
@@ -198,36 +584,41 @@ export class MenuPDFParser {
    * Clusters text items within a horizontal band into regions based on X-coordinate proximity
    */
   private clusterBandIntoRegions(band: TextItem[], pageNum: number, pageHeight: number): MenuRegion[] {
-    if (band.length === 0) return [];
+    if (band.length < 2) return [];
     
-    // Sort by X coordinate
-    const sortedBand = [...band].sort((a, b) => a.x - b.x);
+    // Sort band by X coordinate (left to right)
+    const sortedBand = band.sort((a, b) => a.x - b.x);
+    
     const regions: MenuRegion[] = [];
-    const HORIZONTAL_THRESHOLD = 20; // Pixels - items within this distance are in same region
+    let currentRegion: TextItem[] = [];
     
-    let currentRegionItems: TextItem[] = [sortedBand[0]];
-    
-    for (let i = 1; i < sortedBand.length; i++) {
+    for (let i = 0; i < sortedBand.length; i++) {
       const item = sortedBand[i];
-      const lastItem = currentRegionItems[currentRegionItems.length - 1];
       
-      // Check if item is close enough to be in same region
-      const distance = item.x - (lastItem.x + lastItem.width);
-      
-      if (distance <= HORIZONTAL_THRESHOLD) {
-        currentRegionItems.push(item);
+      if (currentRegion.length === 0) {
+        currentRegion = [item];
       } else {
-        // Create region from current items and start new region
-        if (currentRegionItems.length > 0) {
-          regions.push(this.createRegionFromItems(currentRegionItems, pageNum, pageHeight));
+        const lastItem = currentRegion[currentRegion.length - 1];
+        const xDistance = item.x - (lastItem.x + lastItem.width);
+        
+        // If items are close horizontally (within 100px), group them
+        if (xDistance <= 100) {
+          currentRegion.push(item);
+        } else {
+          // Create region from current group
+          if (currentRegion.length >= 2) {
+            const region = this.createRegionFromItems(currentRegion, pageNum, pageHeight);
+            regions.push(region);
+          }
+          currentRegion = [item];
         }
-        currentRegionItems = [item];
       }
     }
     
-    // Add final region
-    if (currentRegionItems.length > 0) {
-      regions.push(this.createRegionFromItems(currentRegionItems, pageNum, pageHeight));
+    // Add the last region
+    if (currentRegion.length >= 2) {
+      const region = this.createRegionFromItems(currentRegion, pageNum, pageHeight);
+      regions.push(region);
     }
     
     return regions;
@@ -250,7 +641,7 @@ export class MenuPDFParser {
       height: maxY - minY
     };
     
-    // Calculate confidence based on region characteristics
+    // Calculate confidence score
     const confidence = this.calculateRegionConfidence(items, boundingBox);
     
     return {
@@ -266,161 +657,108 @@ export class MenuPDFParser {
    * Calculates confidence score for a region based on menu item characteristics
    */
   private calculateRegionConfidence(items: TextItem[], boundingBox: any): number {
-    let confidence = 0.5; // Base confidence
+    let score = 0.5; // Base score
     
-    // Check for price patterns
-    const hasPrice = items.some(item => /\$?\d+\.?\d*/.test(item.text));
-    if (hasPrice) confidence += 0.3;
+    // Text length variety (names shorter, descriptions longer)
+    const lengths = items.map(item => item.text.length);
+    const hasVariety = Math.max(...lengths) > Math.min(...lengths) * 1.5;
+    if (hasVariety) score += 0.2;
     
-    // Check for reasonable text length (menu items are typically not too short or too long)
-    const totalText = items.map(item => item.text).join(' ').trim();
-    if (totalText.length >= 10 && totalText.length <= 200) confidence += 0.2;
+    // Price pattern detection
+    const hasPricePattern = items.some(item => /\$\d+\.?\d*/.test(item.text));
+    if (hasPricePattern) score += 0.3;
     
-    // Check for multiple text elements (name + description + price)
-    if (items.length >= 2 && items.length <= 5) confidence += 0.1;
+    // Reasonable item count (2-5 elements typical for menu item)
+    if (items.length >= 2 && items.length <= 5) score += 0.2;
     
-    // Check for consistent font sizes (menu items often have consistent typography)
-    const fontSizes = items.map(item => item.fontSize || 12);
-    const avgFontSize = fontSizes.reduce((a, b) => a + b, 0) / fontSizes.length;
-    const fontVariance = fontSizes.reduce((acc, size) => acc + Math.pow(size - avgFontSize, 2), 0) / fontSizes.length;
-    if (fontVariance < 4) confidence += 0.1; // Low variance = consistent typography
+    // Typography consistency using heuristics
+    const fontNames = items.map(item => item.fontName).filter(Boolean);
+    const uniqueFonts = new Set(fontNames).size;
+    if (uniqueFonts <= 3) score += 0.1; // Not too many different fonts
     
-    return Math.min(confidence, 1.0);
+    return Math.min(score, 1.0);
   }
 
   /**
    * Filters regions based on confidence and characteristics
    */
   private filterAndValidateRegions(regions: MenuRegion[]): MenuRegion[] {
-    const MIN_CONFIDENCE = 0.6;
-    const MIN_REGION_WIDTH = 50; // Minimum width for a valid menu region
-    const MIN_TEXT_LENGTH = 5; // Minimum text length for a valid menu region
-    
     return regions.filter(region => {
-      const totalText = region.items.map(item => item.text).join(' ').trim();
+      // Minimum confidence threshold
+      if (region.confidence < 0.6) return false;
       
-      return region.confidence >= MIN_CONFIDENCE &&
-             region.boundingBox.width >= MIN_REGION_WIDTH &&
-             totalText.length >= MIN_TEXT_LENGTH;
+      // Reasonable size constraints
+      if (region.boundingBox.width < 50 || region.boundingBox.height < 10) return false;
+      
+      // Must have at least 2 text items
+      if (region.items.length < 2) return false;
+      
+      // Should have some text content
+      const totalText = region.items.map(item => item.text).join('');
+      if (totalText.trim().length < 5) return false;
+      
+      return true;
     });
   }
 
   /**
-   * Extracts menu items from detected regions with PDF region images
-   */
-  private async extractMenuItemsWithRegions(regions: MenuRegion[], fallbackText: string, pdf: any): Promise<MenuItem[]> {
-    this.log('Extracting menu items with PDF region images...');
-    const menuItems: MenuItem[] = [];
-    
-    for (let i = 0; i < regions.length; i++) {
-      const region = regions[i];
-      const regionText = region.items.map(item => item.text).join(' ').trim();
-      
-      if (i % 20 === 0) {
-        this.log(`Processing region ${i}/${regions.length}: "${regionText.substring(0, 50)}..."`);
-      }
-      
-      const item = await this.parseMenuItemFromRegionWithImage(region, pdf);
-      if (item) {
-        menuItems.push(item);
-      }
-    }
-    
-    // If topological parsing yields few results, fall back to text-based parsing
-    if (menuItems.length < 5) {
-      this.log('Low yield from topological parsing, applying fallback text analysis...');
-      const fallbackItems = this.parseMenuItems(fallbackText, []);
-      menuItems.push(...fallbackItems);
-    }
-    
-    // Remove duplicates and clean up
-    return this.deduplicateItems(menuItems);
-  }
-
-  /**
-   * Extracts menu items from detected regions using enhanced pattern matching (fallback)
-   */
-  private extractMenuItemsFromRegions(regions: MenuRegion[], fallbackText: string): MenuItem[] {
-    this.log('Extracting menu items from topological regions...');
-    const menuItems: MenuItem[] = [];
-    
-    for (let i = 0; i < regions.length; i++) {
-      const region = regions[i];
-      const regionText = region.items.map(item => item.text).join(' ').trim();
-      
-      if (i % 20 === 0) {
-        this.log(`Processing region ${i}/${regions.length}: "${regionText.substring(0, 50)}..."`);
-      }
-      
-      const item = this.parseMenuItemFromRegion(region);
-      if (item) {
-        menuItems.push(item);
-      }
-    }
-    
-    // If topological parsing yields few results, fall back to text-based parsing
-    if (menuItems.length < 5) {
-      this.log('Low yield from topological parsing, applying fallback text analysis...');
-      const fallbackItems = this.parseMenuItems(fallbackText, []);
-      menuItems.push(...fallbackItems);
-    }
-    
-    // Remove duplicates and clean up
-    return this.deduplicateItems(menuItems);
-  }
-
-  /**
-   * Parses a single menu item from a topological region with extracted PDF image
+   * Parse menu item from region with image extraction
    */
   private async parseMenuItemFromRegionWithImage(region: MenuRegion, pdf: any): Promise<MenuItem | null> {
-    const items = region.items.sort((a, b) => a.x - b.x); // Sort left to right
-    const allText = items.map(item => item.text).join(' ').trim();
-    
-    // Extract PDF region as image
-    const regionImage = await this.extractRegionImage(region, pdf);
-    
-    // Look for price in the region
-    let price = 0;
-    let priceText = '';
-    let nameAndDescription = allText;
-    
-    // Find price pattern
-    const priceMatch = allText.match(/\$?(\d+\.?\d*)/);
-    if (priceMatch) {
-      price = parseFloat(priceMatch[1]);
-      priceText = priceMatch[0];
-      nameAndDescription = allText.replace(priceMatch[0], '').trim();
-    }
-    
-    // Split name and description
-    let name = nameAndDescription;
-    let description = '';
-    
-    // Common patterns for separating name and description
-    const separators = [' - ', ' • ', ' | ', '  ', '\n'];
-    for (const separator of separators) {
-      const parts = nameAndDescription.split(separator);
-      if (parts.length >= 2) {
-        name = parts[0].trim();
-        description = parts.slice(1).join(separator).trim();
-        break;
+    try {
+      // Extract text elements from region
+      const texts = region.items.map(item => item.text.trim()).filter(text => text.length > 0);
+      
+      if (texts.length < 2) return null;
+      
+      // Attempt to identify name, description, and price using heuristics
+      let name = '';
+      let description = '';
+      let price = 0;
+      
+      // Find price first (most reliable pattern)
+      const priceRegex = /\$(\d+\.?\d*)/;
+      for (const text of texts) {
+        const priceMatch = text.match(priceRegex);
+        if (priceMatch) {
+          price = parseFloat(priceMatch[1]);
+          break;
+        }
       }
+      
+      // Remove price text from consideration for name/description
+      const nonPriceTexts = texts.filter(text => !priceRegex.test(text));
+      
+      if (nonPriceTexts.length >= 1) {
+        // First non-price text is likely the name
+        name = nonPriceTexts[0];
+        
+        // Remaining texts form description
+        if (nonPriceTexts.length > 1) {
+          description = nonPriceTexts.slice(1).join(' ');
+        }
+      } else {
+        // Fallback: use first text as name
+        name = texts[0];
+      }
+      
+      // Extract region image
+      const regionImage = await this.extractRegionImage(region, pdf);
+      
+      return {
+        id: `item-${region.pageNumber}-${Math.floor(region.boundingBox.x)}-${Math.floor(region.boundingBox.y)}`,
+        name: this.cleanItemName(name),
+        price,
+        description: description || undefined,
+        category: this.categorizeItem(name, description),
+        servingSize: this.estimateServingSize(name, description),
+        regionImage,
+        confidence: region.confidence
+      };
+    } catch (error) {
+      this.log(`Error parsing region: ${error}`);
+      return null;
     }
-    
-    // Validate the extracted data
-    if (!name || name.length < 2) return null;
-    if (price <= 0) return null;
-    
-    return {
-      id: `region-${region.boundingBox.x}-${region.boundingBox.y}`,
-      name: this.cleanItemName(name),
-      price,
-      description: description || undefined,
-      category: this.categorizeItem(name, description),
-      servingSize: this.estimateServingSize(name, description),
-      regionImage, // Base64 encoded image of the PDF region
-      confidence: region.confidence
-    };
   }
 
   /**
@@ -428,254 +766,187 @@ export class MenuPDFParser {
    */
   private async extractRegionImage(region: MenuRegion, pdf: any): Promise<string | undefined> {
     try {
-      // Get the page containing this region
       const page = await pdf.getPage(region.pageNumber);
-      
-      // Calculate scale factor for high-quality extraction
-      const scale = 2.0; // 2x resolution for crisp text
-      const viewport = page.getViewport({ scale });
+      const viewport = page.getViewport({ scale: 2.0 }); // 2x scale for better quality
       
       // Create canvas for rendering
       const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      if (!context) return undefined;
+      const context = canvas.getContext('2d')!;
       
-      canvas.height = viewport.height;
       canvas.width = viewport.width;
+      canvas.height = viewport.height;
       
-      // Render the entire page first
-      const renderContext = {
+      // Render the page
+      await page.render({
         canvasContext: context,
         viewport: viewport
-      };
+      }).promise;
       
-      await page.render(renderContext).promise;
+      // Convert region coordinates to canvas coordinates
+      const scale = 2.0;
+      const padding = 5; // Add small padding around region
       
-      // Calculate region coordinates (PDF uses bottom-up coordinates, canvas uses top-down)
-      const regionX = region.boundingBox.x * scale;
-      const regionY = (region.pageHeight - region.boundingBox.y - region.boundingBox.height) * scale;
-      const regionWidth = region.boundingBox.width * scale;
-      const regionHeight = region.boundingBox.height * scale;
+      const x = Math.max(0, (region.boundingBox.x - padding) * scale);
+      const y = Math.max(0, (viewport.height - region.boundingBox.y - region.boundingBox.height - padding) * scale);
+      const width = Math.min(canvas.width - x, (region.boundingBox.width + 2 * padding) * scale);
+      const height = Math.min(canvas.height - y, (region.boundingBox.height + 2 * padding) * scale);
       
-      // Add some padding around the region for better visual context
-      const padding = 10 * scale;
-      const extractX = Math.max(0, regionX - padding);
-      const extractY = Math.max(0, regionY - padding);
-      const extractWidth = Math.min(canvas.width - extractX, regionWidth + 2 * padding);
-      const extractHeight = Math.min(canvas.height - extractY, regionHeight + 2 * padding);
+      // Extract region as image data
+      const imageData = context.getImageData(x, y, width, height);
       
-      // Extract the region using getImageData
-      const imageData = context.getImageData(extractX, extractY, extractWidth, extractHeight);
-      
-      // Create a new canvas for the extracted region
+      // Create a new canvas for the cropped region
       const regionCanvas = document.createElement('canvas');
-      const regionContext = regionCanvas.getContext('2d');
-      if (!regionContext) return undefined;
+      const regionContext = regionCanvas.getContext('2d')!;
+      regionCanvas.width = width;
+      regionCanvas.height = height;
       
-      regionCanvas.width = extractWidth;
-      regionCanvas.height = extractHeight;
       regionContext.putImageData(imageData, 0, 0);
       
       // Convert to base64
-      return regionCanvas.toDataURL('image/png', 0.9);
-      
+      return regionCanvas.toDataURL('image/png');
     } catch (error) {
-      this.log(`Failed to extract region image: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      this.log(`Error extracting region image: ${error}`);
       return undefined;
     }
   }
 
   /**
-   * Parses a single menu item from a topological region (fallback without image)
+   * Fallback parsing for regions without enhanced heuristics
    */
-  private parseMenuItemFromRegion(region: MenuRegion): MenuItem | null {
-    const items = region.items.sort((a, b) => a.x - b.x); // Sort left to right
-    const allText = items.map(item => item.text).join(' ').trim();
+  private extractMenuItemsFromRegions(regions: MenuRegion[], fallbackText: string): MenuItem[] {
+    const items: MenuItem[] = [];
     
-    // Look for price in the region
-    let price = 0;
-    let priceText = '';
-    let nameAndDescription = allText;
-    
-    // Find price pattern
-    const priceMatch = allText.match(/\$?(\d+\.?\d*)/);
-    if (priceMatch) {
-      price = parseFloat(priceMatch[1]);
-      priceText = priceMatch[0];
-      nameAndDescription = allText.replace(priceMatch[0], '').trim();
+    for (const region of regions) {
+      const item = this.parseMenuItemFromRegion(region);
+      if (item) {
+        items.push(item);
+      }
     }
     
-    // Split name and description
-    let name = nameAndDescription;
-    let description = '';
+    // If we still have few items, try basic text parsing
+    if (items.length < 3) {
+      const textItems = this.parseMenuItems(fallbackText, []);
+      items.push(...textItems);
+    }
     
-    // Common patterns for separating name and description
-    const separators = [' - ', ' • ', ' | ', '  ', '\n'];
-    for (const separator of separators) {
-      const parts = nameAndDescription.split(separator);
-      if (parts.length >= 2) {
-        name = parts[0].trim();
-        description = parts.slice(1).join(separator).trim();
+    return this.deduplicateItems(items);
+  }
+
+  /**
+   * Parse menu item from region (fallback without image)
+   */
+  private parseMenuItemFromRegion(region: MenuRegion): MenuItem | null {
+    const texts = region.items.map(item => item.text.trim()).filter(text => text.length > 0);
+    
+    if (texts.length < 2) return null;
+    
+    let name = '';
+    let description = '';
+    let price = 0;
+    
+    // Find price
+    const priceRegex = /\$(\d+\.?\d*)/;
+    for (const text of texts) {
+      const priceMatch = text.match(priceRegex);
+      if (priceMatch) {
+        price = parseFloat(priceMatch[1]);
         break;
       }
     }
     
-    // Validate the extracted data
-    if (!name || name.length < 2) return null;
-    if (price <= 0) return null;
+    // Remove price text
+    const nonPriceTexts = texts.filter(text => !priceRegex.test(text));
+    
+    if (nonPriceTexts.length >= 1) {
+      name = nonPriceTexts[0];
+      if (nonPriceTexts.length > 1) {
+        description = nonPriceTexts.slice(1).join(' ');
+      }
+    } else {
+      name = texts[0];
+    }
     
     return {
-      id: `region-${region.boundingBox.x}-${region.boundingBox.y}`,
+      id: `item-${region.pageNumber}-${Math.floor(region.boundingBox.x)}-${Math.floor(region.boundingBox.y)}`,
       name: this.cleanItemName(name),
       price,
       description: description || undefined,
       category: this.categorizeItem(name, description),
-      servingSize: this.estimateServingSize(name, description)
+      servingSize: this.estimateServingSize(name, description),
+      confidence: region.confidence
     };
   }
-  
+
   private parseMenuItems(text: string, _textItems: TextItem[]): MenuItem[] {
-    this.log('Starting menu item pattern matching...');
-    const menuItems: MenuItem[] = [];
-    const lines = text.split('\n').filter(line => line.trim());
-    this.log(`Split text into ${lines.length} lines for processing`);
+    const items: MenuItem[] = [];
+    const lines = text.split('\n').filter(line => line.trim().length > 0);
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
-      if (!line) continue;
       
-      if (i % 50 === 0) {
-        this.log(`Processing line ${i}/${lines.length}: "${line.substring(0, 50)}..."`);
-      }
-      
-      // Try multiple patterns for menu items
-      const patterns = [
-        // Pattern 1: "Item Name $12.99" or "Item Name 12.99"
-        /^(.+?)\s+\$?(\d+\.?\d*)\s*$/,
-        // Pattern 2: "Item Name - Description $12.99"
-        /^(.+?)\s*-\s*(.+?)\s+\$?(\d+\.?\d*)\s*$/,
-        // Pattern 3: Price at beginning "$12.99 Item Name"
-        /^\$?(\d+\.?\d*)\s+(.+)$/,
-        // Pattern 4: Multi-line with price on next line
-        /^(.{10,})\s*$/
-      ];
-      
-      for (const pattern of patterns) {
-        const match = line.match(pattern);
-        if (match) {
-          let name = '';
-          let price = 0;
-          let description = '';
+      // Look for price patterns
+      const priceMatch = line.match(/\$(\d+\.?\d*)/);
+      if (priceMatch) {
+        const price = parseFloat(priceMatch[1]);
+        const nameText = line.replace(/\$\d+\.?\d*/, '').trim();
+        
+        if (nameText.length > 0) {
+          const item: MenuItem = {
+            id: `fallback-${i}`,
+            name: this.cleanItemName(nameText),
+            price,
+            category: this.categorizeItem(nameText, ''),
+            servingSize: this.estimateServingSize(nameText, ''),
+            confidence: 0.5
+          };
           
-          if (pattern === patterns[0]) {
-            // Simple name + price
-            name = match[1].trim();
-            price = parseFloat(match[2]);
-          } else if (pattern === patterns[1]) {
-            // Name + description + price
-            name = match[1].trim();
-            description = match[2].trim();
-            price = parseFloat(match[3]);
-          } else if (pattern === patterns[2]) {
-            // Price + name
-            price = parseFloat(match[1]);
-            name = match[2].trim();
-          } else if (pattern === patterns[3]) {
-            // Check next line for price
-            name = match[1].trim();
-            if (i + 1 < lines.length) {
-              const nextLine = lines[i + 1].trim();
-              const priceMatch = nextLine.match(/^\$?(\d+\.?\d*)\s*$/);
-              if (priceMatch) {
-                price = parseFloat(priceMatch[1]);
-                i++; // Skip next line as we processed it
-              }
-            }
-          }
-          
-          if (name && price > 0) {
-            this.log(`Found menu item: "${name}" - $${price}`);
-            const category = this.categorizeItem(name, description);
-            const servingSize = this.estimateServingSize(name, description);
-            
-            menuItems.push({
-              id: `item-${menuItems.length + 1}`,
-              name: this.cleanItemName(name),
-              price,
-              description: description || undefined,
-              category,
-              servingSize
-            });
-            break;
-          }
+          items.push(item);
         }
       }
     }
     
-    return this.deduplicateItems(menuItems);
+    return items;
   }
-  
+
   private categorizeItem(name: string, description: string): string {
     const text = (name + ' ' + description).toLowerCase();
     
-    const categories = {
-      'Appetizers': ['appetizer', 'starter', 'wings', 'nachos', 'dip', 'bread', 'bruschetta', 'calamari'],
-      'Salads': ['salad', 'caesar', 'greens', 'lettuce'],
-      'Soups': ['soup', 'bisque', 'chowder', 'broth'],
-      'Mains': ['entree', 'main', 'chicken', 'beef', 'pork', 'fish', 'salmon', 'steak', 'pasta', 'pizza', 'burger', 'sandwich'],
-      'Sides': ['side', 'fries', 'rice', 'potato', 'vegetable', 'beans'],
-      'Desserts': ['dessert', 'cake', 'pie', 'ice cream', 'chocolate', 'cookie', 'tiramisu'],
-      'Beverages': ['drink', 'coffee', 'tea', 'soda', 'juice', 'beer', 'wine', 'cocktail', 'water']
-    };
-    
-    for (const [category, keywords] of Object.entries(categories)) {
-      if (keywords.some(keyword => text.includes(keyword))) {
-        return category;
-      }
-    }
+    if (text.match(/appetizer|starter|app\b|dip|wing|nachos|salad/)) return 'Appetizers';
+    if (text.match(/burger|sandwich|wrap|pizza|pasta|steak|chicken|fish|entree|main/)) return 'Main Courses';
+    if (text.match(/dessert|cake|pie|ice cream|sundae|cookie/)) return 'Desserts';
+    if (text.match(/drink|beverage|soda|beer|wine|cocktail|coffee|tea/)) return 'Beverages';
+    if (text.match(/side|fries|rice|vegetables|potato/)) return 'Sides';
     
     return 'Other';
   }
-  
+
   private estimateServingSize(name: string, description: string): number {
     const text = (name + ' ' + description).toLowerCase();
     
-    // Look for serving size indicators
-    if (text.includes('family') || text.includes('large')) return 4;
-    if (text.includes('sharing') || text.includes('platter')) return 6;
-    if (text.includes('individual') || text.includes('personal')) return 1;
-    if (text.includes('pizza') && text.includes('large')) return 4;
-    if (text.includes('pizza') && text.includes('medium')) return 3;
-    if (text.includes('pizza') && text.includes('small')) return 2;
+    if (text.match(/appetizer|starter|side/)) return 2;
+    if (text.match(/salad|soup/)) return 1;
+    if (text.match(/pizza|large|family/)) return 4;
+    if (text.match(/sharing|platter/)) return 6;
     
-    // Default serving size based on category
-    const category = this.categorizeItem(name, description);
-    switch (category) {
-      case 'Appetizers': return 2;
-      case 'Salads': return 1;
-      case 'Soups': return 1;
-      case 'Mains': return 1;
-      case 'Sides': return 2;
-      case 'Desserts': return 1;
-      case 'Beverages': return 1;
-      default: return 1;
-    }
+    return 1; // Default individual serving
   }
-  
+
   private cleanItemName(name: string): string {
-    // Remove common prefixes and suffixes
     return name
-      .replace(/^\d+\.\s*/, '') // Remove numbering
-      .replace(/\s*\.\.\.*\s*$/, '') // Remove trailing dots
+      .replace(/\$\d+\.?\d*/, '') // Remove prices
       .replace(/\s+/g, ' ') // Normalize whitespace
-      .trim();
+      .trim()
+      .replace(/^[•\-\*]+\s*/, '') // Remove bullet points
+      .replace(/\s*[•\-\*]+$/, ''); // Remove trailing markers
   }
-  
+
   private deduplicateItems(items: MenuItem[]): MenuItem[] {
     const seen = new Set<string>();
     return items.filter(item => {
-      const key = item.name.toLowerCase() + item.price;
-      if (seen.has(key)) return false;
+      const key = item.name.toLowerCase().trim();
+      if (seen.has(key)) {
+        return false;
+      }
       seen.add(key);
       return true;
     });
