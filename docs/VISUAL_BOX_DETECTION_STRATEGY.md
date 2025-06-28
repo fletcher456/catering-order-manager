@@ -1,39 +1,52 @@
 # Visual Box Detection Strategy for Chinese Restaurant Mode
 
 ## Overview
-Chinese restaurant mode now targets English-language menus with structured visual layouts:
+Chinese restaurant mode targets English-language menus with line-delineated box layouts:
 - **Layout**: Name (top) → Picture (middle) → Price (bottom)
-- **Container**: Darker rectangular boxes against light page background
-- **Content**: English text with potential Chinese characters in names
+- **Container**: Rectangular boxes outlined by darker border lines
+- **Background**: Box interiors match page background color
+- **Shared Borders**: Adjacent boxes may share vertical border lines
 
 ## Detection Algorithm
 
-### Phase 1: Background Analysis
-1. **Page Color Profiling**: Analyze overall page background color/brightness
-2. **Contrast Detection**: Identify regions significantly darker than background
-3. **Box Boundary Detection**: Find rectangular regions with consistent darker borders
+### Phase 1: Edge Detection and Line Identification
+1. **Edge Detection**: Use Sobel/Canny operators to find all edges in the image
+2. **Line Extraction**: Identify horizontal and vertical lines using Hough transform
+3. **Line Filtering**: Filter lines by length, straightness, and darkness relative to background
 
-### Phase 2: Layout Validation
-1. **Vertical Structure**: Validate top-middle-bottom arrangement within boxes
+### Phase 2: Rectangle Construction
+1. **Grid Formation**: Combine horizontal and vertical lines to form potential rectangles
+2. **Shared Border Handling**: Detect where adjacent boxes share vertical lines
+3. **Box Validation**: Verify rectangles have proper aspect ratios and dimensions
+
+### Phase 3: Layout Validation
+1. **Vertical Structure**: Validate top-middle-bottom text arrangement within boxes
 2. **Text Positioning**: Confirm name text at top, price text at bottom
 3. **Image Space Detection**: Identify middle region with minimal text (picture area)
 
-### Phase 3: Content Extraction
+### Phase 4: Content Extraction
 1. **Name Extraction**: Top region text (may include Chinese characters)
 2. **Price Extraction**: Bottom region numeric content with currency symbols
-3. **Image Capture**: Middle region as visual validation thumbnail
+3. **Image Capture**: Complete box region as visual validation thumbnail
 
 ## Implementation Strategy
 
-### Box Detection Methods
-- **Color Histogram Analysis**: Detect darker regions vs light background
-- **Edge Detection**: Find rectangular boundaries with consistent thickness
-- **Contrast Thresholding**: Identify regions with >20% darker pixel intensity
+### Edge-Based Detection Methods
+- **Sobel Edge Detection**: Identify edges in both X and Y directions
+- **Hough Line Transform**: Extract straight line segments from edge data
+- **Line Clustering**: Group parallel lines and identify rectangular structures
+- **Border Thickness Analysis**: Measure line width consistency
+
+### Rectangle Assembly
+- **Intersection Analysis**: Find where horizontal and vertical lines intersect
+- **Corner Detection**: Identify rectangular corners from line intersections
+- **Shared Edge Handling**: Detect boxes that share vertical boundaries
+- **Minimum Bounding Rectangle**: Create boxes from valid corner sets
 
 ### Layout Verification
-- **Spatial Clustering**: Group text elements by Y-coordinate within boxes
-- **Text Density Analysis**: Confirm sparse middle region (image area)
-- **Price Pattern Validation**: Bottom text must contain currency/numeric patterns
+- **Spatial Text Clustering**: Group text elements by Y-coordinate within detected boxes
+- **Text Density Mapping**: Analyze text distribution across box regions
+- **Price Pattern Validation**: Ensure bottom regions contain currency/numeric patterns
 
 ### Chinese Character Support
 - **Bilingual Names**: English menu items with Chinese character names
@@ -41,6 +54,7 @@ Chinese restaurant mode now targets English-language menus with structured visua
 - **Mixed Script Handling**: Parse names containing both English and Chinese text
 
 ## Quality Metrics
-- **Box Detection Confidence**: Based on contrast ratio and rectangular consistency
-- **Layout Validation Score**: Vertical arrangement and text distribution
-- **Content Extraction Accuracy**: Name/price pair validation with image confirmation
+- **Line Detection Confidence**: Based on edge strength and line straightness
+- **Rectangle Validation Score**: Corner detection accuracy and dimensional consistency
+- **Layout Validation Score**: Vertical text arrangement and spacing analysis
+- **Content Extraction Accuracy**: Name/price pair validation with shared border handling

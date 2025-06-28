@@ -1101,68 +1101,321 @@ export class MenuPDFParser {
       const canvas = this.pageCanvasCache.get(page.pageNum);
       if (!canvas) continue;
       
-      // Analyze page background and detect darker regions
-      const darkRegions = this.detectDarkRegions(canvas);
-      this.log(`Found ${darkRegions.length} potential dark regions on page ${page.pageNum}`, 'info', 'box_detection');
+      // Detect line-delineated boxes using edge detection
+      const lineBoxes = this.detectLineDelineatedBoxes(canvas);
+      this.log(`Found ${lineBoxes.length} line-delineated boxes on page ${page.pageNum}`, 'info', 'box_detection');
       
       // Validate regions as menu item boxes
-      const menuBoxes = this.validateMenuBoxes(darkRegions, page.textItems, canvas, page.pageHeight);
-      this.log(`Validated ${menuBoxes.length} menu boxes on page ${page.pageNum}`, 'info', 'box_detection');
+      const menuBoxes = this.validateLineBasedMenuBoxes(lineBoxes, page.textItems, canvas, page.pageHeight);
+      this.log(`Validated ${menuBoxes.length} line-based menu boxes on page ${page.pageNum}`, 'info', 'box_detection');
       
       // Extract menu items from validated boxes
-      await this.extractMenuItemsFromBoxes(menuBoxes, page, canvas);
+      await this.extractMenuItemsFromLineDetectedBoxes(menuBoxes, page, canvas);
     }
   }
 
-  private detectDarkRegions(canvas: HTMLCanvasElement): { x: number, y: number, width: number, height: number, contrast: number }[] {
+  private detectLineDelineatedBoxes(canvas: HTMLCanvasElement): { x: number, y: number, width: number, height: number, confidence: number }[] {
     const context = canvas.getContext('2d')!;
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
     
-    // Calculate overall page brightness
-    let totalBrightness = 0;
-    let pixelCount = 0;
+    this.log('Starting edge-based box detection for line-delineated regions', 'info', 'box_detection');
     
+    // Step 1: Edge detection using Sobel operator
+    const edges = this.applySobelEdgeDetection(imageData);
+    this.log(`Detected ${edges.strongEdges} strong edges`, 'debug', 'box_detection');
+    
+    // Step 2: Extract horizontal and vertical lines
+    const lines = this.extractLines(edges.edgeData, canvas.width, canvas.height);
+    this.log(`Extracted ${lines.horizontal.length} horizontal and ${lines.vertical.length} vertical lines`, 'info', 'box_detection');
+    
+    // Step 3: Form rectangles from line intersections
+    const rectangles = this.formRectanglesFromLines(lines.horizontal, lines.vertical, canvas.width, canvas.height);
+    this.log(`Formed ${rectangles.length} potential rectangles`, 'info', 'box_detection');
+    
+    // Step 4: Validate rectangles as menu boxes
+    const validBoxes = this.validateLineBasedBoxes(rectangles, canvas.width, canvas.height);
+    this.log(`Validated ${validBoxes.length} line-based menu boxes`, 'info', 'box_detection');
+    
+    return validBoxes;
+  }
+
+  private applySobelEdgeDetection(imageData: ImageData): { edgeData: number[], strongEdges: number } {
+    const { width, height, data } = imageData;
+    const grayscale = new Array(width * height);
+    const edgeData = new Array(width * height);
+    
+    // Convert to grayscale
     for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      const brightness = (r + g + b) / 3;
-      totalBrightness += brightness;
-      pixelCount++;
+      const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      grayscale[i / 4] = gray;
     }
     
-    const avgBrightness = totalBrightness / pixelCount;
-    const contrastThreshold = avgBrightness * 0.7; // 30% darker than average
+    // Sobel kernels
+    const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+    const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
     
-    this.log(`Page average brightness: ${avgBrightness.toFixed(1)}, contrast threshold: ${contrastThreshold.toFixed(1)}`, 'debug', 'box_detection');
+    let strongEdges = 0;
+    const edgeThreshold = 30; // Minimum edge strength
     
-    // Scan for rectangular dark regions
-    const darkRegions: { x: number, y: number, width: number, height: number, contrast: number }[] = [];
-    const minBoxSize = 80; // Minimum box size in pixels
-    const stepSize = 20; // Scan step size for performance
-    
-    for (let y = 0; y < canvas.height - minBoxSize; y += stepSize) {
-      for (let x = 0; x < canvas.width - minBoxSize; x += stepSize) {
-        // Sample region brightness
-        const regionBrightness = this.calculateRegionBrightness(imageData, x, y, minBoxSize, minBoxSize);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let gx = 0, gy = 0;
         
-        if (regionBrightness < contrastThreshold) {
-          // Find the full extent of this dark region
-          const region = this.expandDarkRegion(imageData, x, y, contrastThreshold, canvas.width, canvas.height);
-          
-          if (region.width >= minBoxSize && region.height >= minBoxSize) {
-            const contrast = (avgBrightness - regionBrightness) / avgBrightness;
-            darkRegions.push({ ...region, contrast });
+        // Apply Sobel kernels
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const pixelIndex = (y + ky) * width + (x + kx);
+            const kernelIndex = (ky + 1) * 3 + (kx + 1);
             
-            // Skip ahead to avoid overlapping detections
-            x += region.width;
+            gx += grayscale[pixelIndex] * sobelX[kernelIndex];
+            gy += grayscale[pixelIndex] * sobelY[kernelIndex];
+          }
+        }
+        
+        // Calculate edge magnitude
+        const magnitude = Math.sqrt(gx * gx + gy * gy);
+        const index = y * width + x;
+        edgeData[index] = magnitude;
+        
+        if (magnitude > edgeThreshold) {
+          strongEdges++;
+        }
+      }
+    }
+    
+    return { edgeData, strongEdges };
+  }
+
+  private extractLines(edgeData: number[], width: number, height: number): { horizontal: Array<{y: number, x1: number, x2: number, strength: number}>, vertical: Array<{x: number, y1: number, y2: number, strength: number}> } {
+    const horizontal: Array<{y: number, x1: number, x2: number, strength: number}> = [];
+    const vertical: Array<{x: number, y1: number, y2: number, strength: number}> = [];
+    
+    const lineThreshold = 25; // Minimum edge strength for line detection
+    const minLineLength = 40; // Minimum line length in pixels
+    
+    // Extract horizontal lines
+    for (let y = 0; y < height; y++) {
+      let lineStart = -1;
+      let lineStrength = 0;
+      let strengthSum = 0;
+      
+      for (let x = 0; x < width; x++) {
+        const edgeStrength = edgeData[y * width + x] || 0;
+        
+        if (edgeStrength > lineThreshold) {
+          if (lineStart === -1) {
+            lineStart = x;
+            strengthSum = edgeStrength;
+          } else {
+            strengthSum += edgeStrength;
+          }
+        } else {
+          if (lineStart !== -1 && x - lineStart >= minLineLength) {
+            horizontal.push({
+              y,
+              x1: lineStart,
+              x2: x - 1,
+              strength: strengthSum / (x - lineStart)
+            });
+          }
+          lineStart = -1;
+          strengthSum = 0;
+        }
+      }
+      
+      // Handle line ending at edge
+      if (lineStart !== -1 && width - lineStart >= minLineLength) {
+        horizontal.push({
+          y,
+          x1: lineStart,
+          x2: width - 1,
+          strength: strengthSum / (width - lineStart)
+        });
+      }
+    }
+    
+    // Extract vertical lines
+    for (let x = 0; x < width; x++) {
+      let lineStart = -1;
+      let strengthSum = 0;
+      
+      for (let y = 0; y < height; y++) {
+        const edgeStrength = edgeData[y * width + x] || 0;
+        
+        if (edgeStrength > lineThreshold) {
+          if (lineStart === -1) {
+            lineStart = y;
+            strengthSum = edgeStrength;
+          } else {
+            strengthSum += edgeStrength;
+          }
+        } else {
+          if (lineStart !== -1 && y - lineStart >= minLineLength) {
+            vertical.push({
+              x,
+              y1: lineStart,
+              y2: y - 1,
+              strength: strengthSum / (y - lineStart)
+            });
+          }
+          lineStart = -1;
+          strengthSum = 0;
+        }
+      }
+      
+      // Handle line ending at edge
+      if (lineStart !== -1 && height - lineStart >= minLineLength) {
+        vertical.push({
+          x,
+          y1: lineStart,
+          y2: height - 1,
+          strength: strengthSum / (height - lineStart)
+        });
+      }
+    }
+    
+    return { horizontal, vertical };
+  }
+
+  private formRectanglesFromLines(
+    horizontalLines: Array<{y: number, x1: number, x2: number, strength: number}>,
+    verticalLines: Array<{x: number, y1: number, y2: number, strength: number}>,
+    canvasWidth: number,
+    canvasHeight: number
+  ): Array<{x: number, y: number, width: number, height: number, confidence: number}> {
+    const rectangles: Array<{x: number, y: number, width: number, height: number, confidence: number}> = [];
+    const tolerance = 5; // Pixel tolerance for line alignment
+    const minBoxWidth = 80;
+    const minBoxHeight = 60;
+    
+    // Sort lines for efficient processing
+    const sortedHorizontal = horizontalLines.sort((a, b) => a.y - b.y);
+    const sortedVertical = verticalLines.sort((a, b) => a.x - b.x);
+    
+    // Find rectangles by matching horizontal and vertical line pairs
+    for (let i = 0; i < sortedHorizontal.length - 1; i++) {
+      const topLine = sortedHorizontal[i];
+      
+      for (let j = i + 1; j < sortedHorizontal.length; j++) {
+        const bottomLine = sortedHorizontal[j];
+        
+        if (bottomLine.y - topLine.y < minBoxHeight) continue;
+        if (bottomLine.y - topLine.y > 300) break; // Max reasonable box height
+        
+        // Find overlapping X ranges
+        const overlapStart = Math.max(topLine.x1, bottomLine.x1);
+        const overlapEnd = Math.min(topLine.x2, bottomLine.x2);
+        
+        if (overlapEnd - overlapStart < minBoxWidth) continue;
+        
+        // Look for vertical lines that could form the sides
+        for (let k = 0; k < sortedVertical.length - 1; k++) {
+          const leftLine = sortedVertical[k];
+          
+          for (let l = k + 1; l < sortedVertical.length; l++) {
+            const rightLine = sortedVertical[l];
+            
+            if (rightLine.x - leftLine.x < minBoxWidth) continue;
+            if (rightLine.x - leftLine.x > 400) break; // Max reasonable box width
+            
+            // Check if vertical lines align with horizontal line boundaries
+            const leftInRange = leftLine.x >= overlapStart - tolerance && leftLine.x <= overlapEnd + tolerance;
+            const rightInRange = rightLine.x >= overlapStart - tolerance && rightLine.x <= overlapEnd + tolerance;
+            
+            if (!leftInRange || !rightInRange) continue;
+            
+            // Check if vertical lines span the horizontal lines
+            const leftSpans = leftLine.y1 <= topLine.y + tolerance && leftLine.y2 >= bottomLine.y - tolerance;
+            const rightSpans = rightLine.y1 <= topLine.y + tolerance && rightLine.y2 >= bottomLine.y - tolerance;
+            
+            if (leftSpans && rightSpans) {
+              const confidence = (topLine.strength + bottomLine.strength + leftLine.strength + rightLine.strength) / 4 / 100;
+              
+              rectangles.push({
+                x: leftLine.x,
+                y: topLine.y,
+                width: rightLine.x - leftLine.x,
+                height: bottomLine.y - topLine.y,
+                confidence: Math.min(1.0, confidence)
+              });
+            }
           }
         }
       }
     }
     
-    return this.mergeSimilarRegions(darkRegions);
+    return this.mergeOverlappingRectangles(rectangles);
+  }
+
+  private mergeOverlappingRectangles(rectangles: Array<{x: number, y: number, width: number, height: number, confidence: number}>): Array<{x: number, y: number, width: number, height: number, confidence: number}> {
+    const merged: Array<{x: number, y: number, width: number, height: number, confidence: number}> = [];
+    const used = new Set<number>();
+    
+    for (let i = 0; i < rectangles.length; i++) {
+      if (used.has(i)) continue;
+      
+      let currentRect = rectangles[i];
+      used.add(i);
+      
+      // Check for overlaps with remaining rectangles
+      for (let j = i + 1; j < rectangles.length; j++) {
+        if (used.has(j)) continue;
+        
+        const otherRect = rectangles[j];
+        const overlapArea = this.calculateRectangleOverlap(currentRect, otherRect);
+        const currentArea = currentRect.width * currentRect.height;
+        const otherArea = otherRect.width * otherRect.height;
+        
+        // Merge if overlap is significant (>30% of smaller rectangle)
+        if (overlapArea > 0.3 * Math.min(currentArea, otherArea)) {
+          const minX = Math.min(currentRect.x, otherRect.x);
+          const minY = Math.min(currentRect.y, otherRect.y);
+          const maxX = Math.max(currentRect.x + currentRect.width, otherRect.x + otherRect.width);
+          const maxY = Math.max(currentRect.y + currentRect.height, otherRect.y + otherRect.height);
+          
+          currentRect = {
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY,
+            confidence: Math.max(currentRect.confidence, otherRect.confidence)
+          };
+          used.add(j);
+        }
+      }
+      
+      merged.push(currentRect);
+    }
+    
+    return merged;
+  }
+
+  private calculateRectangleOverlap(rect1: {x: number, y: number, width: number, height: number}, rect2: {x: number, y: number, width: number, height: number}): number {
+    const x1 = Math.max(rect1.x, rect2.x);
+    const y1 = Math.max(rect1.y, rect2.y);
+    const x2 = Math.min(rect1.x + rect1.width, rect2.x + rect2.width);
+    const y2 = Math.min(rect1.y + rect1.height, rect2.y + rect2.height);
+    
+    if (x2 <= x1 || y2 <= y1) return 0;
+    return (x2 - x1) * (y2 - y1);
+  }
+
+  private validateLineBasedBoxes(rectangles: Array<{x: number, y: number, width: number, height: number, confidence: number}>, canvasWidth: number, canvasHeight: number): Array<{x: number, y: number, width: number, height: number, confidence: number}> {
+    return rectangles.filter(rect => {
+      // Size validation
+      if (rect.width < 60 || rect.height < 80) return false;
+      if (rect.width > canvasWidth * 0.8 || rect.height > canvasHeight * 0.8) return false;
+      
+      // Aspect ratio validation (should be roughly rectangular, not too wide or tall)
+      const aspectRatio = rect.width / rect.height;
+      if (aspectRatio < 0.3 || aspectRatio > 3.0) return false;
+      
+      // Position validation (not too close to edges)
+      if (rect.x < 10 || rect.y < 10) return false;
+      if (rect.x + rect.width > canvasWidth - 10 || rect.y + rect.height > canvasHeight - 10) return false;
+      
+      return true;
+    });
   }
 
   private calculateRegionBrightness(imageData: ImageData, x: number, y: number, width: number, height: number): number {
@@ -1259,10 +1512,10 @@ export class MenuPDFParser {
              region2.y + region2.height + tolerance < region1.y);
   }
 
-  private validateMenuBoxes(darkRegions: { x: number, y: number, width: number, height: number, contrast: number }[], textItems: TextItem[], canvas: HTMLCanvasElement, pageHeight: number): { x: number, y: number, width: number, height: number, contrast: number, layout: 'valid' | 'invalid' }[] {
-    const validBoxes: { x: number, y: number, width: number, height: number, contrast: number, layout: 'valid' | 'invalid' }[] = [];
+  private validateLineBasedMenuBoxes(lineBoxes: { x: number, y: number, width: number, height: number, confidence: number }[], textItems: TextItem[], canvas: HTMLCanvasElement, pageHeight: number): { x: number, y: number, width: number, height: number, confidence: number, layout: 'valid' | 'invalid' }[] {
+    const validBoxes: { x: number, y: number, width: number, height: number, confidence: number, layout: 'valid' | 'invalid' }[] = [];
     
-    for (const region of darkRegions) {
+    for (const region of lineBoxes) {
       // Convert canvas coordinates to PDF coordinates
       const scale = canvas.height / pageHeight;
       const pdfRegion = {
@@ -1272,12 +1525,13 @@ export class MenuPDFParser {
         height: region.height / scale
       };
       
-      // Find text items within this region
+      // Find text items within this region with some padding tolerance
+      const padding = 5; // Small padding for text that might be close to borders
       const regionText = textItems.filter(item => 
-        item.x >= pdfRegion.x &&
-        item.x + item.width <= pdfRegion.x + pdfRegion.width &&
-        item.y >= pdfRegion.y &&
-        item.y + item.height <= pdfRegion.y + pdfRegion.height
+        item.x >= pdfRegion.x - padding &&
+        item.x + item.width <= pdfRegion.x + pdfRegion.width + padding &&
+        item.y >= pdfRegion.y - padding &&
+        item.y + item.height <= pdfRegion.y + pdfRegion.height + padding
       );
       
       // Validate layout: name at top, price at bottom, sparse middle
@@ -1285,7 +1539,9 @@ export class MenuPDFParser {
       
       if (layoutValid && regionText.length >= 2) {
         validBoxes.push({ ...region, layout: 'valid' });
-        this.log(`Valid menu box: ${region.width.toFixed(0)}x${region.height.toFixed(0)} with ${regionText.length} text items`, 'info', 'box_detection');
+        this.log(`Valid line-based menu box: ${region.width.toFixed(0)}x${region.height.toFixed(0)} with ${regionText.length} text items`, 'info', 'box_detection');
+      } else {
+        this.log(`Invalid line-based box: ${regionText.length} text items, layout valid: ${layoutValid}`, 'debug', 'box_detection');
       }
     }
     
@@ -1314,7 +1570,7 @@ export class MenuPDFParser {
     return hasTopText && hasBottomPrice && sparseMiddle;
   }
 
-  private async extractMenuItemsFromBoxes(menuBoxes: { x: number, y: number, width: number, height: number, contrast: number, layout: 'valid' | 'invalid' }[], page: { textItems: TextItem[], pageNum: number, pageHeight: number }, canvas: HTMLCanvasElement): Promise<void> {
+  private async extractMenuItemsFromLineDetectedBoxes(menuBoxes: { x: number, y: number, width: number, height: number, confidence: number, layout: 'valid' | 'invalid' }[], page: { textItems: TextItem[], pageNum: number, pageHeight: number }, canvas: HTMLCanvasElement): Promise<void> {
     for (const box of menuBoxes.filter(b => b.layout === 'valid')) {
       // Convert canvas coordinates to PDF coordinates
       const scale = canvas.height / page.pageHeight;
@@ -1325,12 +1581,13 @@ export class MenuPDFParser {
         height: box.height / scale
       };
       
-      // Extract text items from this box
+      // Extract text items from this box with padding
+      const padding = 5;
       const boxText = page.textItems.filter(item => 
-        item.x >= pdfRegion.x &&
-        item.x + item.width <= pdfRegion.x + pdfRegion.width &&
-        item.y >= pdfRegion.y &&
-        item.y + item.height <= pdfRegion.y + pdfRegion.height
+        item.x >= pdfRegion.x - padding &&
+        item.x + item.width <= pdfRegion.x + pdfRegion.width + padding &&
+        item.y >= pdfRegion.y - padding &&
+        item.y + item.height <= pdfRegion.y + pdfRegion.height + padding
       );
       
       if (boxText.length >= 2) {
@@ -1338,7 +1595,7 @@ export class MenuPDFParser {
         const enhancedRegion: MenuRegion = {
           items: boxText,
           boundingBox: pdfRegion,
-          confidence: 0.9 + box.contrast * 0.1, // High confidence for detected boxes
+          confidence: 0.85 + box.confidence * 0.15, // High confidence for line-detected boxes
           pageNumber: page.pageNum,
           pageHeight: page.pageHeight
         };
@@ -1351,7 +1608,7 @@ export class MenuPDFParser {
         }
         
         this.detectedRegions.push(enhancedRegion);
-        this.log(`Created enhanced region from visual box: ${boxText.length} items, confidence ${enhancedRegion.confidence.toFixed(3)}`, 'info', 'box_detection');
+        this.log(`Created enhanced region from line-based box: ${boxText.length} items, confidence ${enhancedRegion.confidence.toFixed(3)}`, 'info', 'box_detection');
       }
     }
   }
