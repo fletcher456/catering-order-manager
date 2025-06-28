@@ -55,9 +55,9 @@ digraph MenuParsingArchitecture {
         
         coordinate_sorting [label="Coordinate Sorting\n• Y-axis grouping\n• Top-to-bottom processing", fillcolor=white];
         
-        horizontal_banding [label="Horizontal Band Formation\n• Y-proximity clustering\n• 20px tolerance threshold\n• Band validation", fillcolor=white];
+        horizontal_banding [label="Horizontal Band Formation\n• Y-proximity clustering\n• 1.5em tolerance threshold\n• Band validation", fillcolor=white];
         
-        region_clustering [label="Region Clustering\n• X-proximity analysis\n• 100px distance threshold\n• Rectangular boundary detection", fillcolor=white];
+        region_clustering [label="Region Clustering\n• X-proximity analysis\n• 6em distance threshold\n• Rectangular boundary detection", fillcolor=white];
         
         confidence_scoring [label="Confidence Scoring\n• Text length variety\n• Price pattern presence\n• Typography consistency\n• Spatial coherence", fillcolor=white];
     }
@@ -79,11 +79,25 @@ digraph MenuParsingArchitecture {
         style=filled;
         fillcolor=lightpink;
         
+        subgraph cluster_bootstrapping {
+            label="Bootstrapping Phase";
+            style=filled;
+            fillcolor=lavenderblush;
+            
+            bootstrap_check [label="Bootstrap Assessment\n• Low extraction count\n• Confidence threshold\n• Coverage analysis", fillcolor=white];
+            
+            fallback_processing [label="Fallback Text Processing\n• Traditional line parsing\n• Pattern matching\n• Basic triple extraction", fillcolor=white];
+            
+            bootstrap_reprocessing [label="Bootstrap Reprocessing\n• Merge fallback items\n• Apply heuristic validation\n• Extract enhanced patterns", fillcolor=white];
+            
+            convergence_analysis [label="Convergence Analysis\n• Quality improvement\n• Pattern consistency\n• Stability metrics", fillcolor=white];
+        }
+        
         triple_parsing [label="Triple Parsing\n• Name extraction\n• Description assembly\n• Price identification\n• Category assignment", fillcolor=white];
         
         document_validation [label="Document-wide Validation\n• Name uniqueness\n• Price distribution\n• Economic clustering\n• Outlier detection", fillcolor=white];
         
-        fallback_processing [label="Fallback Processing\n• Traditional text parsing\n• Pattern matching\n• Error recovery", fillcolor=white];
+        pattern_refinement [label="Pattern Refinement\n• Template enhancement\n• Heuristic tuning\n• Fractal propagation", fillcolor=white];
         
         deduplication [label="Deduplication\n• Name similarity\n• Content comparison\n• Confidence ranking", fillcolor=white];
     }
@@ -160,12 +174,25 @@ digraph MenuParsingArchitecture {
     region_filtering -> heuristic_validation;
     heuristic_validation -> image_extraction;
     
-    // Flow connections - Menu Item Assembly
+    // Flow connections - Menu Item Assembly with Bootstrapping
     image_extraction -> triple_parsing;
     triple_parsing -> document_validation;
-    document_validation -> fallback_processing [style=dashed, label="if needed"];
-    document_validation -> deduplication;
-    fallback_processing -> deduplication;
+    document_validation -> bootstrap_check;
+    
+    // Bootstrapping flow
+    bootstrap_check -> fallback_processing [label="if low quality"];
+    bootstrap_check -> deduplication [label="if sufficient"];
+    fallback_processing -> bootstrap_reprocessing;
+    bootstrap_reprocessing -> convergence_analysis;
+    convergence_analysis -> pattern_refinement;
+    
+    // Convergence loops
+    pattern_refinement -> triple_parsing [style=dashed, color=purple, label="enhanced patterns"];
+    convergence_analysis -> bootstrap_check [style=dashed, color=purple, label="retry assessment"];
+    
+    // Final output
+    pattern_refinement -> deduplication;
+    convergence_analysis -> deduplication [label="if converged"];
     
     // Flow connections - Catering Interface
     deduplication -> results_display;
@@ -208,6 +235,11 @@ digraph MenuParsingArchitecture {
     pattern_extraction -> heuristic_validation [style=bold, color=darkgreen, label="fractal templates"];
     typography_fingerprinting -> confidence_scoring [style=bold, color=darkgreen, label="consistency metrics"];
     number_classification -> triple_parsing [style=bold, color=darkgreen, label="type validation"];
+    
+    // Bootstrapping fractal feedback
+    bootstrap_reprocessing -> pattern_extraction [style=bold, color=darkgreen, label="bootstrap patterns"];
+    pattern_refinement -> typography_fingerprinting [style=bold, color=darkgreen, label="refined fingerprints"];
+    convergence_analysis -> number_classification [style=bold, color=darkgreen, label="classification tuning"];
     
     // Legend
     subgraph cluster_legend {
