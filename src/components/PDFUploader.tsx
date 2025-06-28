@@ -24,6 +24,7 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
   const [error, setError] = useState<string | null>(null);
   const [optimizationMetrics, setOptimizationMetrics] = useState<OptimizationMetrics | null>(null);
   const [chineseRestaurantMode, setChineseRestaurantMode] = useState(false);
+  const [skipOptimization, setSkipOptimization] = useState(false);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -102,7 +103,12 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
       // Set Chinese restaurant mode
       parser.setChineseRestaurantMode(chineseRestaurantMode);
       
-      // Extract menu items with full optimization
+      // Configure optimization based on user preference
+      if (chineseRestaurantMode && skipOptimization) {
+        parser.setOptimizationEnabled(false);
+      }
+      
+      // Extract menu items
       const result = await parser.extractMenuFromPDF(file);
       
       // Pass results to parent component
@@ -194,32 +200,67 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
                 </p>
                 
                 {/* Chinese Restaurant Mode Toggle */}
-                <div className="mb-4 flex items-center justify-center">
-                  <label className="flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={chineseRestaurantMode}
-                      onChange={(e) => setChineseRestaurantMode(e.target.checked)}
-                      className="sr-only"
-                    />
-                    <div className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      chineseRestaurantMode ? 'bg-blue-600' : 'bg-gray-200'
-                    }`}>
-                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        chineseRestaurantMode ? 'translate-x-6' : 'translate-x-1'
-                      }`} />
+                <div className="mb-4 space-y-3">
+                  <div className="flex items-center justify-center">
+                    <label className="flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={chineseRestaurantMode}
+                        onChange={(e) => setChineseRestaurantMode(e.target.checked)}
+                        className="sr-only"
+                      />
+                      <div className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        chineseRestaurantMode ? 'bg-blue-600' : 'bg-gray-200'
+                      }`}>
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                          chineseRestaurantMode ? 'translate-x-6' : 'translate-x-1'
+                        }`} />
+                      </div>
+                      <span className="ml-3 text-sm font-medium text-gray-700">
+                        Chinese Restaurant Mode
+                      </span>
+                    </label>
+                  </div>
+                  
+                  <p className="text-xs text-gray-500 text-center">
+                    {chineseRestaurantMode 
+                      ? "Line-delineated box detection with edge analysis"
+                      : "Standard mode for name/description/price triples"
+                    }
+                  </p>
+                  
+                  {/* Skip Optimization Toggle - Only shown in Chinese mode */}
+                  {chineseRestaurantMode && (
+                    <div className="flex items-center justify-center">
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={skipOptimization}
+                          onChange={(e) => setSkipOptimization(e.target.checked)}
+                          className="sr-only"
+                        />
+                        <div className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                          skipOptimization ? 'bg-orange-500' : 'bg-gray-200'
+                        }`}>
+                          <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                            skipOptimization ? 'translate-x-5' : 'translate-x-1'
+                          }`} />
+                        </div>
+                        <span className="ml-3 text-xs font-medium text-gray-600">
+                          Skip optimization (faster)
+                        </span>
+                      </label>
                     </div>
-                    <span className="ml-3 text-sm font-medium text-gray-700">
-                      Chinese Restaurant Mode
-                    </span>
-                  </label>
+                  )}
+                  
+                  {chineseRestaurantMode && skipOptimization && (
+                    <div className="text-center">
+                      <p className="text-xs text-orange-600 bg-orange-50 px-3 py-1 rounded border border-orange-200">
+                        Uses default parameters for faster processing
+                      </p>
+                    </div>
+                  )}
                 </div>
-                <p className="text-xs text-gray-500 mb-4">
-                  {chineseRestaurantMode 
-                    ? "Optimized for menus with name/price pairs (no descriptions)"
-                    : "Standard mode for menus with name/description/price triples"
-                  }
-                </p>
                 
                 <input
                   type="file"

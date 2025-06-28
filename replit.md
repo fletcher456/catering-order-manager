@@ -102,6 +102,7 @@ A React-based catering order management system that parses restaurant menu PDFs 
 - June 28, 2025: Implemented Chinese restaurant mode supporting name/price pairs without descriptions for simplified menu formats
 - June 28, 2025: Enhanced Chinese restaurant mode with visual box detection for English menus with name/picture/price layouts in darker boxes
 - June 28, 2025: Redesigned Chinese restaurant mode with edge-based detection for line-delineated boxes with shared borders
+- June 28, 2025: Added optimization skip toggle for Chinese restaurant mode enabling faster processing with default parameters
 
 ## Recent Issues Resolved
 

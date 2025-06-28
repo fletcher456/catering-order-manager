@@ -45,6 +45,7 @@ export class MenuPDFParser {
   private chineseRestaurantMode: boolean = false;
   private pageCanvasCache: Map<number, HTMLCanvasElement> = new Map();
   private detectedRegions: MenuRegion[] = [];
+  private useOptimization: boolean = true;
   
   // Optimization results cache
   private currentParameters?: OptimizationParameters;
@@ -71,6 +72,11 @@ export class MenuPDFParser {
   setChineseRestaurantMode(enabled: boolean): void {
     this.chineseRestaurantMode = enabled;
     this.log(`Chinese restaurant mode ${enabled ? 'enabled' : 'disabled'}`, 'info', 'configuration');
+  }
+
+  setOptimizationEnabled(enabled: boolean): void {
+    this.useOptimization = enabled;
+    this.log(`Bayesian optimization ${enabled ? 'enabled' : 'disabled'}`, 'info', 'configuration');
   }
 
   private log(message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', phase: string = 'general'): void {
@@ -130,10 +136,31 @@ export class MenuPDFParser {
       this.documentFeatures = this.analyzeDocumentFeatures(pageData);
       this.log(`Analyzed document: ${this.documentFeatures.pageCount} pages, ${this.documentFeatures.totalTextItems} text items`, 'info', 'analysis');
 
-      // Run Bayesian optimization
-      this.updateState('optimization', 20, 'Running Bayesian parameter optimization');
-      const optimizationResult = await this.runOptimization(pageData);
-      this.currentParameters = optimizationResult.parameters;
+      // Run Bayesian optimization if enabled
+      let optimizationResult: OptimizationResult;
+      if (this.useOptimization) {
+        this.updateState('optimization', 20, 'Running Bayesian parameter optimization');
+        optimizationResult = await this.runOptimization(pageData);
+        this.currentParameters = optimizationResult.parameters;
+      } else {
+        this.updateState('default_parameters', 20, 'Using default parameters (optimization skipped)');
+        optimizationResult = {
+          parameters: this.getDefaultParameters(),
+          performance: 0.75, // Default performance estimate
+          convergenceMetrics: {
+            iterations: 0,
+            finalImprovement: 0,
+            parameterStability: 1.0
+          },
+          objectiveBreakdown: {
+            accuracy: 0.7,
+            speed: 1.0,
+            confidence: 0.75,
+            memoryEfficiency: 1.0
+          }
+        };
+        this.currentParameters = optimizationResult.parameters;
+      }
 
       // Chinese restaurant mode: detect visual boxes first
       if (this.chineseRestaurantMode) {
@@ -332,6 +359,67 @@ export class MenuPDFParser {
     const classificationsSize = this.numberClassifications.length * 100;
     
     return textItemsSize + regionsSize + classificationsSize;
+  }
+
+  private getDefaultParameters(): OptimizationParameters {
+    return {
+      phase0: {
+        priceClassificationThreshold: 0.8,
+        typographyConsistencyWeight: 0.7,
+        economicClusteringTolerance: 0.15,
+        patternExtractionMinSupport: 0.6,
+        numberClassificationConfidence: 0.75
+      },
+      phase1: {
+        yProximityThreshold: 20,
+        xDistanceThreshold: 150,
+        confidenceWeights: {
+          textLengthVariety: 0.25,
+          pricePattern: 0.35,
+          itemCount: 0.2,
+          typography: 0.15,
+          bilingualConsistency: 0.05
+        },
+        minimumConfidenceThreshold: 0.6,
+        nameToDirectPriceWeight: 0.8
+      },
+      phase2: {
+        dimensionalConstraints: {
+          minWidthEm: 8,
+          minHeightEm: 2
+        },
+        heuristicValidationWeights: {
+          nameLength: 0.3,
+          descriptionComplexity: 0.25,
+          priceValidation: 0.45
+        },
+        extractionQualityThreshold: 0.7,
+        confidenceFilteringThreshold: 0.5,
+        regionMergingTolerance: 15
+      },
+      phase3: {
+        bootstrapQualityThreshold: 0.8,
+        convergenceThreshold: 0.95,
+        maxBootstrapIterations: 5,
+        deduplicationSimilarityThreshold: 0.85,
+        documentValidationWeights: {
+          uniqueness: 0.4,
+          priceDistribution: 0.35,
+          categoryConsistency: 0.25
+        },
+        tripleParsingWeights: {
+          nameValidation: 0.4,
+          descriptionValidation: 0.3,
+          priceValidation: 0.3
+        },
+        pairParsingWeights: {
+          nameValidation: 0.5,
+          priceValidation: 0.4,
+          bilingualValidation: 0.1
+        },
+        chineseCharacterDetectionThreshold: 0.1
+      }
+    };
   }
 
   private async executeOptimizedPipeline(pageData: { textItems: TextItem[], pageNum: number, pageHeight: number }[], pdf: any): Promise<MenuItem[]> {
