@@ -99,6 +99,7 @@ A React-based catering order management system that parses restaurant menu PDFs 
 - June 28, 2025: Generated visual program flow architecture diagram (PROGRAM_FLOW_ARCHITECTURE.svg) showing complete system integration with Bayesian optimization
 - June 28, 2025: Complete application rewrite implementing full Adaptive Bayesian Optimization Engine with all 4 processing phases
 - June 28, 2025: Integrated real-time optimization progress tracking, visual PDF region extraction, and comprehensive processing metrics display
+- June 28, 2025: Implemented Chinese restaurant mode supporting name/price pairs without descriptions for simplified menu formats
 
 ## Recent Issues Resolved
 

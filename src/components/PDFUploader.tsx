@@ -23,6 +23,7 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [optimizationMetrics, setOptimizationMetrics] = useState<OptimizationMetrics | null>(null);
+  const [chineseRestaurantMode, setChineseRestaurantMode] = useState(false);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -98,6 +99,9 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
         }
       });
 
+      // Set Chinese restaurant mode
+      parser.setChineseRestaurantMode(chineseRestaurantMode);
+      
       // Extract menu items with full optimization
       const result = await parser.extractMenuFromPDF(file);
       
@@ -188,6 +192,35 @@ export const PDFUploader: React.FC<PDFUploaderProps> = ({ onMenuExtracted }) => 
                 <p className="text-gray-600 mb-4">
                   Drag and drop your PDF file here, or click to browse
                 </p>
+                
+                {/* Chinese Restaurant Mode Toggle */}
+                <div className="mb-4 flex items-center justify-center">
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={chineseRestaurantMode}
+                      onChange={(e) => setChineseRestaurantMode(e.target.checked)}
+                      className="sr-only"
+                    />
+                    <div className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      chineseRestaurantMode ? 'bg-blue-600' : 'bg-gray-200'
+                    }`}>
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        chineseRestaurantMode ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </div>
+                    <span className="ml-3 text-sm font-medium text-gray-700">
+                      Chinese Restaurant Mode
+                    </span>
+                  </label>
+                </div>
+                <p className="text-xs text-gray-500 mb-4">
+                  {chineseRestaurantMode 
+                    ? "Optimized for menus with name/price pairs (no descriptions)"
+                    : "Standard mode for menus with name/description/price triples"
+                  }
+                </p>
+                
                 <input
                   type="file"
                   accept=".pdf"

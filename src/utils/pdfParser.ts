@@ -42,6 +42,7 @@ export class MenuPDFParser {
   private logs: LogEntry[] = [];
   private processingStartTime: number = 0;
   private documentFeatures?: DocumentFeatures;
+  private chineseRestaurantMode: boolean = false;
   
   // Optimization results cache
   private currentParameters?: OptimizationParameters;
@@ -65,6 +66,11 @@ export class MenuPDFParser {
     this.stateCallback = callback;
   }
 
+  setChineseRestaurantMode(enabled: boolean): void {
+    this.chineseRestaurantMode = enabled;
+    this.log(`Chinese restaurant mode ${enabled ? 'enabled' : 'disabled'}`, 'info', 'configuration');
+  }
+
   private log(message: string, level: 'info' | 'warn' | 'error' | 'debug' = 'info', phase: string = 'general'): void {
     const entry: LogEntry = {
       timestamp: Date.now(),
@@ -85,6 +91,7 @@ export class MenuPDFParser {
       phase,
       progress,
       message,
+      chineseRestaurantMode: this.chineseRestaurantMode,
       optimizationIteration,
       currentParameters: this.currentParameters,
       metrics: this.getCurrentMetrics()
@@ -833,6 +840,11 @@ export class MenuPDFParser {
   }
 
   private parseMenuItemFromRegion(region: MenuRegion, index: number): MenuItem | null {
+    // Use Chinese restaurant mode parser if enabled
+    if (this.chineseRestaurantMode) {
+      return this.parseChineseMenuItemFromRegion(region, index);
+    }
+    
     const texts = region.items.map(item => item.text);
     
     // Find price
@@ -878,7 +890,8 @@ export class MenuPDFParser {
       extractionMetadata: {
         sourceRegion: region,
         processingPhase: 'region_parsing',
-        optimizationParameters: this.currentParameters || {}
+        optimizationParameters: this.currentParameters || {},
+        chineseRestaurantMode: this.chineseRestaurantMode
       }
     };
   }
@@ -942,5 +955,109 @@ export class MenuPDFParser {
     });
     
     return unique;
+  }
+
+  // Chinese restaurant mode utilities
+  private containsChineseCharacters(text: string): boolean {
+    return /[\u4e00-\u9fff]/.test(text);
+  }
+
+  private validateBilingualName(name: string): {
+    hasChineseChars: boolean;
+    hasEnglishChars: boolean;
+    isWellFormed: boolean;
+  } {
+    const hasChineseChars = this.containsChineseCharacters(name);
+    const hasEnglishChars = /[a-zA-Z]/.test(name);
+    const isWellFormed = hasChineseChars || hasEnglishChars;
+    
+    return {
+      hasChineseChars,
+      hasEnglishChars,
+      isWellFormed
+    };
+  }
+
+  private getBilingualConsistency(textItems: TextItem[]): number {
+    if (!this.chineseRestaurantMode) return 1.0;
+    
+    const nameItems = textItems.filter(item => 
+      item.text.length > 3 && !this.extractNumbers(item.text).length
+    );
+    
+    if (nameItems.length === 0) return 0.0;
+    
+    const bilingualCount = nameItems.filter(item => {
+      const validation = this.validateBilingualName(item.text);
+      return validation.hasChineseChars && validation.hasEnglishChars;
+    }).length;
+    
+    return bilingualCount / nameItems.length;
+  }
+
+  private parseChineseMenuItemFromRegion(region: MenuRegion, index: number): MenuItem | null {
+    const texts = region.items.map(item => item.text);
+    
+    // Find price
+    let price = 0;
+    let priceText = '';
+    for (const text of texts) {
+      const priceMatch = text.match(/\$(\d+\.?\d*)/);
+      if (priceMatch) {
+        price = parseFloat(priceMatch[1]);
+        priceText = text;
+        break;
+      }
+    }
+    
+    if (price === 0) return null;
+    
+    // Find name (non-price text, prefer bilingual entries)
+    const nonPriceTexts = texts.filter(text => text !== priceText && text.length > 2);
+    if (nonPriceTexts.length === 0) return null;
+    
+    // For Chinese mode, prefer bilingual names or Chinese characters
+    let name = '';
+    for (const text of nonPriceTexts) {
+      const validation = this.validateBilingualName(text);
+      if (validation.hasChineseChars && validation.hasEnglishChars) {
+        name = text; // Bilingual name is preferred
+        break;
+      } else if (validation.hasChineseChars && !name) {
+        name = text; // Chinese-only name as fallback
+      } else if (!name) {
+        name = text; // Any valid name as last resort
+      }
+    }
+    
+    if (!name) {
+      name = nonPriceTexts[0]; // Fallback to first available text
+    }
+    
+    const category = this.categorizeItem(name, '');
+    
+    return {
+      id: `chinese-item-${index}`,
+      name: this.cleanChineseName(name),
+      price,
+      description: undefined, // No description in Chinese mode
+      category,
+      servingSize: this.estimateServingSize(name, ''),
+      confidence: region.confidence,
+      regionImage: region.regionImage,
+      extractionMetadata: {
+        sourceRegion: region,
+        processingPhase: 'chinese_region_parsing',
+        optimizationParameters: this.currentParameters || {},
+        chineseRestaurantMode: true
+      }
+    };
+  }
+
+  private cleanChineseName(name: string): string {
+    return name
+      .replace(/^\d+\.?\s*/, '') // Remove leading numbers
+      .replace(/\s+/g, ' ')      // Normalize whitespace
+      .trim();
   }
 }

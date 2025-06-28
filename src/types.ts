@@ -43,14 +43,15 @@ export interface TypographyFingerprint {
 
 export interface StructuralPattern {
   nameFingerprint: TypographyFingerprint;
-  descriptionFingerprint: TypographyFingerprint;
+  descriptionFingerprint?: TypographyFingerprint;
   priceFingerprint: TypographyFingerprint;
   spatialRelationships: {
-    nameToDescription: { dx: number; dy: number; tolerance: number };
-    descriptionToPrice: { dx: number; dy: number; tolerance: number };
+    nameToDescription?: { dx: number; dy: number; tolerance: number };
+    descriptionToPrice?: { dx: number; dy: number; tolerance: number };
     nameToPrice: { dx: number; dy: number; tolerance: number };
   };
   confidence: number;
+  mode: 'standard' | 'chinese';
 }
 
 // Bayesian optimization interfaces
@@ -77,8 +78,10 @@ export interface SpatialOptimizationParameters {
     pricePattern: number;
     itemCount: number;
     typography: number;
+    bilingualConsistency?: number;
   };
   minimumConfidenceThreshold: number;
+  nameToDirectPriceWeight?: number;
 }
 
 export interface RegionOptimizationParameters {
@@ -111,6 +114,12 @@ export interface AssemblyOptimizationParameters {
     descriptionValidation: number;
     priceValidation: number;
   };
+  pairParsingWeights?: {
+    nameValidation: number;
+    priceValidation: number;
+    bilingualValidation: number;
+  };
+  chineseCharacterDetectionThreshold?: number;
 }
 
 export interface OptimizationResult {
@@ -152,6 +161,7 @@ export interface MenuItem {
     sourceRegion: MenuRegion;
     processingPhase: string;
     optimizationParameters: Partial<OptimizationParameters>;
+    chineseRestaurantMode?: boolean;
   };
 }
 
@@ -173,6 +183,7 @@ export interface ProcessingState {
   phase: string;
   progress: number;
   message: string;
+  chineseRestaurantMode?: boolean;
   optimizationIteration?: number;
   currentParameters?: Partial<OptimizationParameters>;
   metrics?: Partial<ProcessingMetrics>;
