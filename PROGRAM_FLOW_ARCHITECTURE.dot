@@ -88,7 +88,7 @@ digraph MenuParsingArchitecture {
     }
     
     subgraph cluster_menu_item_assembly {
-        label="Menu Item Assembly & Validation";
+        label="Phase 3: Menu Item Assembly & Validation";
         style=filled;
         fillcolor=lightpink;
         
